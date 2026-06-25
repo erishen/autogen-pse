@@ -1,0 +1,12 @@
+{
+  "tasks": {
+    "demo": {
+      "label": "代码交付 Demo",
+      "description": "Planner → Specialist → Evaluator 协作完成代码任务"
+    },
+    "portfolio-review": {
+      "label": "投资周报",
+      "description": "生成结构化摘要，PSE 按需深度分析"
+    }
+  }
+}

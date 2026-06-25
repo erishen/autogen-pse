@@ -1,0 +1,6 @@
+{
+  "name": "demo",
+  "label": "代码交付 Demo",
+  "description": "Planner 分析需求 → Specialist 实现代码并写入磁盘 → Evaluator 独立运行 pytest + ruff 验证",
+  "env_required": []
+}

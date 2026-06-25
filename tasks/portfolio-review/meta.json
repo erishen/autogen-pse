@@ -1,0 +1,7 @@
+{
+  "name": "portfolio-review",
+  "label": "投资周报",
+  "description": "基于投资数据生成周度结构化摘要，PSE 三角色按需做深度分析和调仓建议",
+  "prefer": "规则引擎优先（prepare.py），PSE 按需（run.py）",
+  "env_required": ["ASSET_LENS_DIR", "MONEY_CSV_DIR", "MARKET_INDICES"]
+}

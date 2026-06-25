@@ -1,0 +1,30 @@
+[project]
+name = "autogen-pse"
+version = "0.1.0"
+description = "Planner-Specialist-Evaluator three-role agent framework powered by Microsoft AutoGen"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "autogen-agentchat>=0.4.0",
+    "autogen-ext[openai]>=0.4.0",
+    "fastapi>=0.100",
+    "markdown>=3.0",
+    "python-dotenv>=1.0.0",
+    "uvicorn>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
