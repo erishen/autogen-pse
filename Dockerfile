@@ -10,7 +10,7 @@ WORKDIR /app
 
 RUN pip install uv
 
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 RUN uv sync --no-dev
 
 COPY src/autogen_pse/ src/autogen_pse/
