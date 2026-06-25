@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent  # project root
 TASKS_DIR = ROOT / "tasks"
-VENV_PYTHON = ROOT / ".venv/bin/python"
+VENV_PYTHON = ROOT / ".venv/bin/python" if (ROOT / ".venv").exists() else Path(sys.executable)
 
 
 def _load_registry() -> dict:

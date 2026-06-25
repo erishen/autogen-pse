@@ -58,7 +58,7 @@ async def run_task(task_name: str):
             cwd=str(ROOT),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**__import__("os").environ, "PYTHONUNBUFFERED": "1"},
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         # 逐行推送 stdout
         while process.stdout:

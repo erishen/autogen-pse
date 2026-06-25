@@ -127,7 +127,7 @@ async def _run_one_cycle(
 
     async for msg in team.run_stream(task=task):
         tracker.feed(msg)
-        if type(msg).__name__ == "TaskResult":
+        if isinstance(msg, TaskResult):
             continue
         messages.append(msg)
         if verbose:
