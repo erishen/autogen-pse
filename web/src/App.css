@@ -163,7 +163,7 @@ th {
 .modal {
   background: white;
   border-radius: 8px;
-  width: min(700px, 90vw);
+  width: min(800px, 95vw);
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -182,6 +182,21 @@ th {
 .modal-body {
   padding: 20px;
   overflow-y: auto;
+}
+.modal-body::-webkit-scrollbar {
+  width: 10px;
+}
+.modal-body::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+.modal-body::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 4px;
+  min-height: 40px;
+}
+.modal-body::-webkit-scrollbar-thumb:hover {
+  background: #aaa;
 }
 .trace-meta {
   display: flex;
@@ -214,8 +229,6 @@ th {
   border-radius: 4px;
   font-size: 0.85em;
   white-space: pre-wrap;
-  max-height: 400px;
-  overflow-y: auto;
 }
 .cycle-stats {
   display: flex;
@@ -257,8 +270,6 @@ th {
   font-size: 0.82em;
   line-height: 1.5;
   white-space: pre-wrap;
-  max-height: 600px;
-  overflow-y: auto;
   background: #fafafa;
   padding: 8px;
   border-radius: 4px;
