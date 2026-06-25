@@ -26,22 +26,22 @@ class Settings(BaseSettings):
     # Trace output
     PSE_TRACE_DIR: str = "outputs/traces"
 
-    # Issue detection thresholds
-    PSE_LONG_LOSS_DAYS: int = 180
-    PSE_LOW_EFF_DAYS: int = 365
-    PSE_LOW_EFF_MAX_RETURN: float = 2.0
-    PSE_LOW_EFF_MIN_AMOUNT: int = 10000
-    PSE_HIGH_VOL_MIN_RETURN: float = 50
-    PSE_HIGH_VOL_MAX_DAYS: int = 180
-    PSE_HIGH_VOL_MIN_AMOUNT: int = 5000
-    PSE_LARGE_POS_TYPES: str = "理财,债券,高端理财"
-    PSE_LARGE_POS_MIN_AMOUNT: int = 100000
-    PSE_LARGE_POS_MAX_RETURN: float = 2.5
+    # Issue detection thresholds (must be set in .env)
+    PSE_LONG_LOSS_DAYS: int = 0
+    PSE_LOW_EFF_DAYS: int = 0
+    PSE_LOW_EFF_MAX_RETURN: float = 0.0
+    PSE_LOW_EFF_MIN_AMOUNT: int = 0
+    PSE_HIGH_VOL_MIN_RETURN: float = 0.0
+    PSE_HIGH_VOL_MAX_DAYS: int = 0
+    PSE_HIGH_VOL_MIN_AMOUNT: int = 0
+    PSE_LARGE_POS_TYPES: str = ""
+    PSE_LARGE_POS_MIN_AMOUNT: int = 0
+    PSE_LARGE_POS_MAX_RETURN: float = 0.0
 
-    # Market indices (comma-separated column names)
-    MARKET_INDICES: str = "上证指数,沪深300,中证500,纳指100,标普500,黄金GLD,能源XLE"
+    # Market indices (comma-separated, must be set in .env)
+    MARKET_INDICES: str = ""
 
-    # Web dashboard
+    # Web dashboard CORS
     CORS_ORIGINS: str = "http://localhost:5173"
 
     @property
