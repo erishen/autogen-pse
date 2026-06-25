@@ -34,7 +34,11 @@ MARKET_INDICES = [name.strip() for name in _MARKET_INDICES.split(",")]
 def _latest_output_file(suffix: str) -> Path:
     output_dir = ASSET_LENS / "output"
     files = sorted(output_dir.glob(f"投资收益率分析_*{suffix}"), reverse=True)
-    return files[0] if files else output_dir / f"投资收益率分析_{datetime.now():%Y%m%d}{suffix}"
+    return (
+        files[0]
+        if files
+        else output_dir / f"投资收益率分析_{datetime.now():%Y%m%d}{suffix}"
+    )
 
 
 def load_json() -> dict:
