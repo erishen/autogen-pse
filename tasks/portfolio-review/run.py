@@ -7,13 +7,13 @@ from pathlib import Path
 
 BASE = Path(__file__).parent
 sys.path.insert(0, str(BASE.parent.parent / "src"))
-from autogen_pse import (
+from autogen_pse import (  # noqa: E402
     create_pse_team,
     run_task,
     format_knowledge_context,
     retrieve_knowledge,
     settings,
-)  # noqa: E402
+)
 
 PROMPT_FILE = BASE / "output/portfolio_review_prompt.md"
 
