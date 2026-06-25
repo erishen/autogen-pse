@@ -249,7 +249,9 @@ def _write_trace(
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
 
     total_prompt = sum(r["token"]["total_prompt"] for r in traces if "token" in r)
-    total_completion = sum(r["token"]["total_completion"] for r in traces if "token" in r)
+    total_completion = sum(
+        r["token"]["total_completion"] for r in traces if "token" in r
+    )
 
     trace_data = {
         "started_at": started_at,

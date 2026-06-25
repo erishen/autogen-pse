@@ -135,7 +135,9 @@ def run_ruff(path: str = ".") -> str:
 # ── RAG 知识库检索 ──
 
 
-def retrieve_knowledge(kb_path: str, queries: list[str] | None = None) -> dict[str, list[dict[str, Any]]]:
+def retrieve_knowledge(
+    kb_path: str, queries: list[str] | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """从 langchain-llm-toolkit RAG 系统中检索个人投资知识。
 
     Args:
@@ -192,7 +194,11 @@ def retrieve_knowledge(kb_path: str, queries: list[str] | None = None) -> dict[s
                 logger.warning("查询 '%s' 失败: %s", query, e)
                 results[query] = []
 
-        logger.info("检索到 %d 个查询的知识，共 %d 篇文档", len(queries), sum(len(v) for v in results.values()))
+        logger.info(
+            "检索到 %d 个查询的知识，共 %d 篇文档",
+            len(queries),
+            sum(len(v) for v in results.values()),
+        )
         return results
     except Exception as e:
         logger.warning("加载向量库失败: %s", e)

@@ -9,7 +9,9 @@ ROOT = Path(__file__).parent.parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", case_sensitive=False, extra="ignore"
+    )
 
     # LLM
     OPENAI_API_KEY: str = ""
@@ -58,7 +60,10 @@ class Settings(BaseSettings):
 
     @property
     def has_knowledge_base(self) -> bool:
-        return bool(self.KNOWLEDGE_BASE_PATH) and (ROOT / self.KNOWLEDGE_BASE_PATH).exists()
+        return (
+            bool(self.KNOWLEDGE_BASE_PATH)
+            and (ROOT / self.KNOWLEDGE_BASE_PATH).exists()
+        )
 
     @property
     def resolved_asset_lens_dir(self) -> Path | None:
