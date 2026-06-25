@@ -1,11 +1,15 @@
-"""共享工具函数和 Token 计数器。"""
+"""共享工具函数、Token 计数器和 RAG 知识库检索。"""
 
+import logging
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from autogen_agentchat.messages import AgentEvent, ChatMessage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,3 +130,103 @@ def run_ruff(path: str = ".") -> str:
         return result.stdout or "ruff 检查通过，无问题。"
     except Exception as e:
         return f"[错误] ruff 执行失败: {e}"
+
+
+# ── RAG 知识库检索 ──
+
+
+def retrieve_knowledge(kb_path: str, queries: list[str] | None = None) -> dict[str, list[dict[str, Any]]]:
+    """从 langchain-llm-toolkit RAG 系统中检索个人投资知识。
+
+    Args:
+        kb_path: 指向 langchain-llm-toolkit 项目的路径。
+        queries: 检索查询列表，默认为投资相关查询。
+
+    Returns:
+        Dict 映射 query -> document 列表。
+    """
+    kb_dir = Path(kb_path).resolve()
+    if not kb_dir.exists():
+        logger.warning("知识库路径不存在: %s", kb_dir)
+        return {}
+
+    if queries is None:
+        queries = [
+            "投资策略 投资偏好 风险偏好",
+            "个人投资经验 资产配置",
+            "投资目标 收益预期",
+            "交易纪律 止损 止盈",
+        ]
+
+    sys.path.insert(0, str(kb_dir / "src"))
+    try:
+        from langchain_llm_toolkit.rag import RAGSystem
+    except ImportError:
+        logger.warning("无法导入 langchain_llm_toolkit.rag，跳过知识库检索")
+        sys.path.pop(0)
+        return {}
+
+    try:
+        rag = RAGSystem(
+            vector_store_type="faiss",
+            embedding_type="ollama",
+            embedding_model="nomic-embed-text:latest",
+        )
+        rag.vector_store_dir = str(kb_dir / "vector_store")
+        rag.faiss_persist_dir = str(kb_dir / "vector_store")
+        rag.load_vector_store()
+
+        results: dict[str, list[dict[str, Any]]] = {}
+        for query in queries:
+            try:
+                docs = rag.retrieve_hybrid(query, k=3, bm25_weight=0.3)
+                results[query] = [
+                    {
+                        "content": doc.page_content[:500],
+                        "category": doc.metadata.get("category", "unknown"),
+                        "source": doc.metadata.get("source", "unknown"),
+                    }
+                    for doc in docs
+                ]
+            except Exception as e:
+                logger.warning("查询 '%s' 失败: %s", query, e)
+                results[query] = []
+
+        logger.info("检索到 %d 个查询的知识，共 %d 篇文档", len(queries), sum(len(v) for v in results.values()))
+        return results
+    except Exception as e:
+        logger.warning("加载向量库失败: %s", e)
+        return {}
+    finally:
+        sys.path.pop(0)
+
+
+def format_knowledge_context(knowledge: dict[str, list[dict[str, Any]]]) -> str:
+    """将检索到的知识格式化为可读的上下文字符串。
+
+    Args:
+        knowledge: Dict 映射 query -> document 列表。
+
+    Returns:
+        格式化后的字符串，供 PSE 分析使用。
+    """
+    if not knowledge:
+        return ""
+    total_docs = sum(len(v) for v in knowledge.values())
+    if total_docs == 0:
+        return ""
+
+    lines = [
+        "=== 投资人个人知识库（投资偏好、策略经验） ===",
+        "",
+    ]
+    for query, docs in knowledge.items():
+        if not docs:
+            continue
+        lines.append(f"关于「{query}」的相关知识：")
+        for i, doc in enumerate(docs, 1):
+            lines.append(f"  [{doc['category']}] {doc['content'][:300]}")
+        lines.append("")
+
+    lines.append("请结合以上个人投资偏好和知识进行分析。")
+    return "\n".join(lines)

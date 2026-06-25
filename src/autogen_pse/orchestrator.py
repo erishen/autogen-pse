@@ -1,7 +1,6 @@
 """RoundRobinGroupChat 编排层 — 含循环控制、step_buffer、执行 Trace 和 Token 统计。"""
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -11,29 +10,24 @@ from autogen_agentchat.conditions import ExternalTermination, TextMentionTermina
 from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_ext.models.openai import OpenAIChatCompletionClient
-from dotenv import load_dotenv
 
 from .agents import create_evaluator, create_planner, create_specialist
+from .config import settings
 from .tools import AgentTokenStats, TokenReport, TokenTracker
 
-load_dotenv()
-
 # ── 循环控制参数 ──
-MAX_PARTIAL_RETRIES = 3  # 连续 PARTIAL 超过此次数 → 强制 BLOCKED
-MAX_FAIL_RETRIES = 2  # 连续 FAIL 超过此次数 → 强制 BLOCKED
-TURNS_PER_CYCLE = 20  # 每次 plan→execute→evaluate 循环最多 20 轮
+MAX_PARTIAL_RETRIES = 3
+MAX_FAIL_RETRIES = 2
+TURNS_PER_CYCLE = 20
 
-# 日志输出目录
-TRACE_DIR = Path(os.getenv("PSE_TRACE_DIR", "outputs/traces"))
+TRACE_DIR = settings.trace_dir
 
 
 def _create_model_client() -> OpenAIChatCompletionClient:
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    kwargs = dict(model=model, api_key=os.getenv("OPENAI_API_KEY"))
-    if base_url:
-        kwargs["base_url"] = base_url
-    if not model.startswith("gpt-"):
+    kwargs: dict = dict(model=settings.OPENAI_MODEL, api_key=settings.OPENAI_API_KEY)
+    if settings.OPENAI_BASE_URL:
+        kwargs["base_url"] = settings.OPENAI_BASE_URL
+    if not settings.OPENAI_MODEL.startswith("gpt-"):
         kwargs["model_info"] = {
             "vision": False,
             "function_calling": True,
@@ -64,8 +58,6 @@ def create_pse_team(
 
 
 class CycleResult:
-    """一次 plan→execute→evaluate 循环的结果。"""
-
     def __init__(
         self,
         outcome: str,
@@ -73,14 +65,13 @@ class CycleResult:
         report: TokenReport,
         messages: list | None = None,
     ):
-        self.outcome = outcome  # "PASS" | "PARTIAL" | "FAIL" | "TIMEOUT"
-        self.summary = summary  # Evaluator/Planner 的最后一段发言
+        self.outcome = outcome
+        self.summary = summary
         self.report = report
         self.messages = messages or []
 
 
 def _detect_outcome(messages: list) -> tuple[str, str]:
-    """从消息历史中检测循环结果。"""
     last_text = ""
     for msg in reversed(messages):
         if isinstance(msg, TextMessage) and msg.source in ("Planner", "Evaluator"):
@@ -99,7 +90,6 @@ def _detect_outcome(messages: list) -> tuple[str, str]:
 
 
 def _make_trace(report: TokenReport) -> dict:
-    """将 TokenReport 转为 trace JSON 的可序列化字典。"""
     agents = {}
     for name, stats in report.agents.items():
         agents[name] = {
@@ -121,7 +111,6 @@ async def _run_one_cycle(
     task: str,
     verbose: bool,
 ) -> CycleResult:
-    """运行一次完整的 plan→execute→evaluate 循环。"""
     tracker = TokenTracker()
     messages = []
 
@@ -134,7 +123,6 @@ async def _run_one_cycle(
             _print_message(msg)
 
     outcome, summary = _detect_outcome(messages)
-    # 提取所有文本消息用于 trace
     chat_log = []
     for m in messages:
         if isinstance(m, TextMessage):
@@ -147,20 +135,8 @@ async def run_task(
     task: str,
     verbose: bool = False,
 ) -> tuple[TaskResult, TokenReport]:
-    """运行任务，带循环控制和 step_buffer。
-
-    流程:
-      第 1 次循环: Planner plan → Specialist execute → Evaluator 判决
-        ├─ PASS → 交付
-        ├─ PARTIAL → 保留上下文，Planner 修复后重试（最多 3 次）
-        └─ FAIL → 清空上下文，重新 plan（最多 2 次）
-
-    Returns:
-        (TaskResult, TokenReport) — TaskResult.stop_reason 带有 Evaluator 最终判决。
-        执行 Trace 写入 outputs/traces/ 目录。
-    """
-    traces = []  # 每轮循环的 trace 记录
-    all_reports = []  # 每轮循环的 Token 报告对象
+    traces = []
+    all_reports = []
     partial_count = 0
     fail_count = 0
     last_verdict = ""
@@ -182,7 +158,6 @@ async def run_task(
         last_verdict = result.outcome
         all_reports.append(result.report)
 
-        # 记录本轮 trace
         trace_entry = {
             "cycle": cycle,
             "started": cycle_start,
@@ -234,13 +209,11 @@ async def run_task(
             print(f"\n⏹ 退出: {result.outcome}")
         break
 
-    # 最终判决
     if fail_count > MAX_FAIL_RETRIES:
         last_verdict = f"FAIL→BLOCKED（{MAX_FAIL_RETRIES}次FAIL后自动终止）"
     elif partial_count > MAX_PARTIAL_RETRIES:
         last_verdict = f"PARTIAL→BLOCKED（{MAX_PARTIAL_RETRIES}次PARTIAL后自动终止）"
 
-    # 合并 Token
     merged = TokenReport()
     for r in all_reports:
         merged.total_rounds += r.total_rounds
@@ -252,7 +225,6 @@ async def run_task(
             existing.prompt_tokens += stats.prompt_tokens
             existing.completion_tokens += stats.completion_tokens
 
-    # 写执行 trace 文件
     trace_file = _write_trace(started_at, last_verdict, cycle, traces, merged, task)
     if verbose:
         print(f"\n📋 执行 Trace → {trace_file}")
@@ -274,13 +246,10 @@ def _write_trace(
     report: TokenReport,
     task: str,
 ) -> Path:
-    """写入结构化执行 trace 到文件。"""
     TRACE_DIR.mkdir(parents=True, exist_ok=True)
 
     total_prompt = sum(r["token"]["total_prompt"] for r in traces if "token" in r)
-    total_completion = sum(
-        r["token"]["total_completion"] for r in traces if "token" in r
-    )
+    total_completion = sum(r["token"]["total_completion"] for r in traces if "token" in r)
 
     trace_data = {
         "started_at": started_at,
@@ -302,6 +271,4 @@ def _write_trace(
 
 def _print_message(message) -> None:
     if isinstance(message, TextMessage):
-        source = message.source
-        content = message.content
-        print(f"\n{'=' * 60}\n[{source}]\n{'=' * 60}\n{content}")
+        print(f"\n{'=' * 60}\n[{message.source}]\n{'=' * 60}\n{message.content}")
