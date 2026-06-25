@@ -31,6 +31,12 @@ MARKET_INDICES = [name.strip() for name in _MARKET_INDICES.split(",")]
 # ── 数据加载 ──
 
 
+def _latest_output_file(suffix: str) -> Path:
+    output_dir = ASSET_LENS / "output"
+    files = sorted(output_dir.glob(f"投资收益率分析_*{suffix}"), reverse=True)
+    return files[0] if files else output_dir / f"投资收益率分析_{datetime.now():%Y%m%d}{suffix}"
+
+
 def load_json() -> dict:
     subprocess.run(
         ["make", "calculate"],
@@ -39,12 +45,12 @@ def load_json() -> dict:
         text=True,
         timeout=120,
     )
-    path = ASSET_LENS / "output" / f"投资收益率分析_{datetime.now():%Y%m%d}.json"
+    path = _latest_output_file(".json")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_products() -> list:
-    path = ASSET_LENS / "output" / f"投资收益率分析_{datetime.now():%Y%m%d}.csv"
+    path = _latest_output_file(".csv")
     with open(path, encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
