@@ -1,133 +1,139 @@
 # autogen-pse
 
-基于 Microsoft AutoGen 的 **Planner-Specialist-Evaluator 三角色 Agent 框架**。三个角色各司其职、独立验证，形成闭环交付流水线。
+A **Planner-Specialist-Evaluator three-role agent framework** built on Microsoft AutoGen. Three agents collaborate — each with clear responsibilities and independent verification — forming a closed-loop delivery pipeline.
 
-## 快速开始
+## Quick Start
 
 ```bash
-cp .env.example .env          # 配置 API Key 和外部路径
-uv sync                        # 安装依赖
-make demo                      # 运行快速排序 Demo
+cp .env.example .env          # Configure API key and external paths
+uv sync                        # Install dependencies
+make demo                      # Run the quicksort demo
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 autogen-pse/
-├── src/autogen_pse/           # 框架核心（引擎不变）
-├── tasks/                     # 任务注册中心
-│   ├── _registry.json         # 所有任务的元信息
-│   ├── demo/                  # 代码交付 Demo
+├── src/autogen_pse/           # Core engine
+│   ├── orchestrator.py        # Cycle control, step_buffer, trace recording
+│   ├── agents.py              # Planner / Specialist / Evaluator factories
+│   ├── prompts.py             # Prompt loader (supports task-specific prompts)
+│   └── tools.py               # Token tracking & reporting
+├── tasks/                     # Task registry
+│   ├── _registry.json         # All registered tasks
+│   ├── demo/                  # Code delivery demo
 │   │   ├── meta.json / run.py / prompts/
-│   │   └── output/            # 生成产物（gitignored）
-│   └── portfolio-review/      # 投资周报分析
+│   │   └── output/            # Generated files (gitignored)
+│   └── portfolio-review/      # Investment weekly review
 │       ├── meta.json / run.py / prompts/
-│       ├── prepare.py          # 数据准备（零 LLM 成本）
-│       ├── prepare_market.py   # 市场指数提取
-│       └── output/             # 生成产物（gitignored）
-├── web/                       # Vite + React 前端
+│       ├── prepare.py          # Data prep (zero LLM cost)
+│       ├── prepare_market.py   # Market index extraction
+│       └── output/             # Generated files (gitignored)
+├── web/                       # Vite + React frontend
 │   ├── src/App.jsx / App.css
-│   ├── src/TrendChart.jsx     # 资产趋势图（Chart.js）
-│   └── src/api.js             # API 客户端
-├── web_server.py              # FastAPI 后端
-├── cli.py                     # pse list / pse run <task> / pse trace ✅ 新增
-├── tests/                     # 31 条测试用例
+│   ├── src/TrendChart.jsx     # Asset trend chart (Chart.js)
+│   └── src/api.js             # API client
+├── web_server.py              # FastAPI backend
+├── cli.py                     # CLI: pse list / run / trace
+├── tests/                     # 31 unit tests
 ├── Makefile
-├── .env.example               # 配置模板
+├── .env.example               # Configuration template
 └── .gitignore
 ```
 
-## 三个入口
+## Three Entry Points
 
-### CLI — 任务平台
-
-```bash
-python cli.py list              # 列出所有任务
-python cli.py run <task>        # 运行任务（prepare → PSE）
-python cli.py trace -n 5        # 查看最近 5 次执行 trace
-```
-
-### Makefile — 快捷命令
+### CLI — Task Platform
 
 ```bash
-make demo        # 代码交付 Demo
-make summarize   # 生成投资摘要（零成本）
-make review      # 投资周报 PSE 分析
-make market      # 最新指数行情
-make serve      # 启动 Web Dashboard（http://localhost:8080）
-make test        # 31 条测试
-make lint        # 代码检查
+python cli.py list              # List all tasks
+python cli.py run <task>        # Run a task (prepare → PSE)
+python cli.py trace -n 5        # View last 5 execution traces
 ```
 
-**`make summarize`** 是日常工具：读 asset-lens 的 JSON 输出，生成结构化摘要，并用规则引擎自动检测 4 类持仓问题（长期亏损、资金效率低、高波动、结构问题）。零 LLM 成本。
+### Makefile — Shortcuts
 
-**`make review`** 是深度分析：PSE 三角色基于摘要编写投资报告、独立验证数据准确性。只在拿不准时跑。
+```bash
+make demo        # Code delivery demo
+make summarize   # Generate investment summary (zero LLM cost)
+make review      # Weekly review with PSE analysis
+make market      # Latest market indices
+make serve       # Start web dashboard (http://localhost:8080)
+make test        # 31 unit tests
+make lint        # Code checks
+```
 
-**`make serve`** 启动 Web Dashboard：`http://localhost:8080` — 资产趋势图、一键触发任务、执行历史。
+**`make summarize`** is the daily tool: reads asset-lens JSON output, generates a structured summary, and uses a rule engine to auto-detect 4 categories of portfolio issues (long-term losses, low capital efficiency, high volatility, structural problems). Zero LLM cost.
 
-## PSE 三角色分工
+**`make review`** is deep analysis: the PSE trio writes an investment report based on the summary, with independent data verification. Run only when you need a second opinion.
 
-| 角色 | 职责 | 约束 |
+**`make serve`** launches the Web Dashboard at `http://localhost:8080` — asset trend charts, one-click task execution, execution history.
+
+## PSE Three-Role Division
+
+| Role | Responsibility | Constraint |
 |------|------|------|
-| **Planner** | 分析需求、分解任务、委托执行、交付决策 | 不写代码，不做计算 |
-| **Specialist** | 执行具体任务，产物写磁盘 | 只做分配的事，完成后汇报 |
-| **Evaluator** | 独立验证产物，输出判决 | 不信任 Planner，不给建议，只判 PASS/PARTIAL/FAIL |
+| **Planner** | Analyze requirements, decompose tasks, delegate execution, make delivery decisions | No code, no calculations |
+| **Specialist** | Execute specific tasks, write deliverables to disk | Only what's assigned, report on completion |
+| **Evaluator** | Independently verify deliverables, output verdict | Don't trust Planner, no suggestions, only PASS/PARTIAL/FAIL |
 
-## 循环控制和 step_buffer
+## Cycle Control & step_buffer
 
-每次任务由若干次 plan→execute→evaluate 循环组成：
+Each task consists of multiple plan→execute→evaluate cycles:
 
 ```
 Planner → Specialist → Evaluator
            ↑    PARTIAL     │
-           └── 修复后重试 ──┘  （最多 3 次）
+           └── fix & retry ─┘  (max 3 times)
            ↑    FAIL         │
-           └── 重新 plan ───┘  （最多 2 次，超限自动 BLOCKED）
+           └── fresh plan ──┘  (max 2 times, auto BLOCKED)
 
-PASS → 交付完成
+PASS → delivered
 ```
 
-**step_buffer**: PARTIAL 只传判决摘要保持焦点；FAIL 清空上下文重新 plan，避免 token 失控。
+**step_buffer**: on PARTIAL, only the verdict summary is passed to keep focus; on FAIL, the context is cleared and planning restarts — preventing token explosion.
 
-每轮循环的详细 Trace（判决结果、各 Agent Token 消耗、耗时）写入 `outputs/traces/trace_*.json`。
+Detailed traces per cycle (verdict, per-agent token usage, duration) are written to `outputs/traces/trace_*.json`.
 
-## 环境变量
+## Environment Variables
 
-所有配置集中在 `.env`，包括：
+All configuration is centralized in `.env`:
 
-| 变量 | 说明 |
+| Variable | Description |
 |------|------|
-| `OPENAI_API_KEY` | LLM API Key |
-| `OPENAI_BASE_URL` | API 地址 |
-| `ASSET_LENS_DIR` | asset-lens 项目路径 |
-| `MONEY_CSV_DIR` | 资产汇总 CSV 数据路径 |
-| `PSE_*` 系列 | 问题检测阈值（10 项，全部必填） |
-| `MARKET_INDICES` | 市场指数名（逗号分隔，必填） |
+| `OPENAI_API_KEY` | LLM API key |
+| `OPENAI_BASE_URL` | API base URL |
+| `ASSET_LENS_DIR` | Path to asset-lens project |
+| `MONEY_CSV_DIR` | Path to market CSV data directory |
+| `PSE_*` series | Issue detection thresholds (10 required) |
+| `MARKET_INDICES` | Market index names (comma-separated, required) |
 
-详见 `.env.example` 中的逐项注释。
+See `.env.example` for detailed comments.
 
-## 技术栈
+## Tech Stack
 
-- **AutoGen** (RoundRobinGroupChat) — Agent 编排
-- **DeepSeek** / OpenAI 兼容 — 模型后端
-- **uv** — Python 项目管理
+- **AutoGen** (RoundRobinGroupChat) — Agent orchestration
+- **DeepSeek** / OpenAI-compatible — Model backend
+- **FastAPI** — Web API with SSE streaming
+- **Vite + React** — Dashboard with Chart.js
+- **uv** — Python project management
 
-## 扩展新任务
+## Adding a New Task
 
-三步加一个新场景：
+Three steps:
 
 ```bash
-# 1. 创建任务目录
+# 1. Create task directory
 mkdir -p tasks/new-task/prompts
 
-# 2. 写三个角色提示词
+# 2. Write three role prompts
 #    tasks/new-task/prompts/planner.md
 #    tasks/new-task/prompts/specialist.md
 #    tasks/new-task/prompts/evaluator.md
 
-# 3. 写入口脚本（可选 prepare.py）
-#    tasks/new-task/run.py        # 读数据 → create_pse_team(task="new-task") → run_task()
-#    tasks/new-task/meta.json     # 名称和描述
+# 3. Write entry scripts (optional prepare.py)
+#    tasks/new-task/run.py        # Read data → create_pse_team(task="new-task") → run_task()
+#    tasks/new-task/meta.json     # Name and description
 ```
 
-然后在 `tasks/_registry.json` 注册，`pse list` 就能看到了。
+Then register in `tasks/_registry.json` — `pse list` will pick it up.
