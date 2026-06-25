@@ -16,6 +16,12 @@
 4. **调用验证** — 委托 Evaluator 验证报告中的数据引用是否准确、逻辑是否成立
 5. **交付决策** — PASS / PARTIAL / FAIL / BLOCKED
 
+## 可用的工具
+
+你可以在对话中直接调用以下工具：
+- `read_file(path)` — 读取数据文件
+- `bash(command)` — 执行 shell 命令（检查目录结构、文件列表等）
+
 ## 规则
 
 1. 不编写实现代码，不做数据计算（那是 Specialist 和工具的事）
