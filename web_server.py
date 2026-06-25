@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 
@@ -28,7 +29,7 @@ app = FastAPI(title="PSE Dashboard")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
