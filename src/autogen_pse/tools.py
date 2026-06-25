@@ -9,6 +9,8 @@ from typing import Any
 
 from autogen_agentchat.messages import AgentEvent, ChatMessage
 
+from .config import ROOT
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,11 +110,14 @@ def read_file(path: str) -> str:
 
 def run_pytest(test_path: str = ".") -> str:
     try:
+        p = Path(test_path)
+        resolve_dir = str(p.parent.resolve()) if p.parent.exists() else None
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", test_path, "-v", "--tb=short"],
+            [sys.executable, "-m", "pytest", p.name, "-v", "--tb=short"],
             capture_output=True,
             text=True,
             timeout=60,
+            cwd=resolve_dir,
         )
         return result.stdout + "\n" + result.stderr
     except Exception as e:
@@ -121,15 +126,36 @@ def run_pytest(test_path: str = ".") -> str:
 
 def run_ruff(path: str = ".") -> str:
     try:
+        p = Path(path)
+        resolve_dir = str(p.parent.resolve()) if p.parent.exists() else None
+        target = p.name if resolve_dir else path
         result = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", path],
+            [sys.executable, "-m", "ruff", "check", target],
             capture_output=True,
             text=True,
             timeout=30,
+            cwd=resolve_dir,
         )
         return result.stdout or "ruff 检查通过，无问题。"
     except Exception as e:
         return f"[错误] ruff 执行失败: {e}"
+
+
+def bash(command: str, timeout: int = 30) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True,
+            timeout=timeout,
+            cwd=str(ROOT),
+        )
+        return result.stdout.strip() + "\n" + result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return f"[超时] 命令执行超过 {timeout} 秒"
+    except Exception as e:
+        return f"[错误] 命令执行失败: {e}"
 
 
 # ── RAG 知识库检索 ──

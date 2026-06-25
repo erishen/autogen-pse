@@ -4,7 +4,7 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 from .prompts import load_prompt
-from .tools import read_file, run_pytest, run_ruff
+from .tools import bash, read_file, run_pytest, run_ruff
 
 
 def write_file(path: str, content: str) -> str:
@@ -29,6 +29,8 @@ def create_planner(
         system_message=load_prompt("planner", task),
         description="交付负责人",
         model_client_stream=True,
+        tools=[read_file, bash],
+        reflect_on_tool_use=True,
     )
 
 
@@ -42,7 +44,7 @@ def create_specialist(
         system_message=load_prompt("specialist", task),
         description="实施者",
         model_client_stream=True,
-        tools=[write_file],
+        tools=[write_file, bash, read_file, run_ruff, run_pytest],
         reflect_on_tool_use=True,
     )
 
@@ -57,6 +59,6 @@ def create_evaluator(
         system_message=load_prompt("evaluator", task),
         description="独立评审官",
         model_client_stream=True,
-        tools=[read_file, run_pytest, run_ruff],
+        tools=[read_file, run_pytest, run_ruff, bash],
         reflect_on_tool_use=True,
     )
