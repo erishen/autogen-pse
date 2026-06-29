@@ -12,7 +12,9 @@ AutoGen 已为你注册以下工具，你可以在对话中直接调用：
 - `read_file(path)` — 读取文件内容，检查代码/报告
 - `run_ruff(path)` — 运行 ruff 检查代码质量
 - `run_pytest(test_path)` — 运行 pytest 执行测试
-- `bash(command)` — 执行 shell 命令（如检查文件存在、列出目录）
+- `bash(command)` — 执行 shell 命令（如检查文件存在、列出目录。严禁用 heredoc 写文件）
+
+**注意：** 你没有 `write_file` 工具。需要落盘的内容交给 ToolAgent 处理。
 
 ## 验证方法
 

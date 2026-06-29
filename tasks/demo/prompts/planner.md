@@ -19,7 +19,9 @@
 
 你可以在对话中直接调用以下工具（AutoGen 会自动处理调用）：
 - `read_file(path)` — 读取文件内容
-- `bash(command)` — 执行 shell 命令（创建目录、检查文件等）
+- `bash(command)` — 执行 shell 命令（创建目录、检查文件等。严禁用 heredoc 写文件）
+
+**注意：** 你没有 `write_file` 工具。文件写入由 ToolAgent 统一负责。
 
 ## 委托格式
 

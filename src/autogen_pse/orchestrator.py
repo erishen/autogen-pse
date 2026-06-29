@@ -1,6 +1,8 @@
 """RoundRobinGroupChat 编排层 — 含循环控制、step_buffer、执行 Trace 和 Token 统计。"""
 
 import json
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -11,20 +13,29 @@ from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-from .agents import create_evaluator, create_planner, create_specialist
+from .agents import (
+    create_evaluator,
+    create_planner,
+    create_specialist,
+    create_tool_agent,
+)
 from .config import settings
 from .tools import AgentTokenStats, TokenReport, TokenTracker
 
 # ── 循环控制参数 ──
-MAX_PARTIAL_RETRIES = 3
-MAX_FAIL_RETRIES = 2
-TURNS_PER_CYCLE = 20
+MAX_PARTIAL_RETRIES = int(os.getenv("PSE_MAX_PARTIAL_RETRIES", "3"))
+MAX_FAIL_RETRIES = int(os.getenv("PSE_MAX_FAIL_RETRIES", "2"))
+TURNS_PER_CYCLE = int(os.getenv("PSE_TURNS_PER_CYCLE", "20"))
 
 TRACE_DIR = settings.trace_dir
 
 
 def _create_model_client() -> OpenAIChatCompletionClient:
-    kwargs: dict = dict(model=settings.OPENAI_MODEL, api_key=settings.OPENAI_API_KEY)
+    kwargs: dict = dict(
+        model=settings.OPENAI_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        max_tokens=8192,  # 非流式 API 限制生成长度，避免超时
+    )
     if settings.OPENAI_BASE_URL:
         kwargs["base_url"] = settings.OPENAI_BASE_URL
     if not settings.OPENAI_MODEL.startswith("gpt-"):
@@ -32,10 +43,9 @@ def _create_model_client() -> OpenAIChatCompletionClient:
             "vision": False,
             "function_calling": True,
             "json_output": True,
-            "structured_output": True,
             "family": "unknown",
         }
-    return OpenAIChatCompletionClient(**kwargs)
+    return OpenAIChatCompletionClient(**kwargs, timeout=180)  # Agnes 非流式需要更长时间
 
 
 def create_pse_team(
@@ -48,10 +58,11 @@ def create_pse_team(
     planner = create_planner(model_client, task)
     specialist = create_specialist(model_client, task)
     evaluator = create_evaluator(model_client, task)
+    tool_agent = create_tool_agent(model_client)
 
     text_term = TextMentionTermination("交付完成") | TextMentionTermination("BLOCKED")
     return RoundRobinGroupChat(
-        participants=[planner, specialist, evaluator],
+        participants=[planner, specialist, evaluator, tool_agent],
         termination_condition=text_term | ExternalTermination(),
         max_turns=TURNS_PER_CYCLE,
     )
@@ -229,6 +240,8 @@ async def run_task(
     if verbose:
         print(f"\n📋 执行 Trace → {trace_file}")
 
+    _cleanup_old_traces()
+
     return (
         TaskResult(
             messages=[],
@@ -236,6 +249,21 @@ async def run_task(
         ),
         merged,
     )
+
+
+def _cleanup_old_traces() -> None:
+    """清理 7 天前的 trace 文件。"""
+    cutoff = time.time() - 7 * 86400
+    trace_dir = TRACE_DIR
+    if not trace_dir.exists():
+        return
+    deleted = 0
+    for f in trace_dir.glob("trace_*.json"):
+        if f.stat().st_mtime < cutoff:
+            f.unlink()
+            deleted += 1
+    if deleted:
+        pass  # silent cleanup, no log to keep output clean
 
 
 def _write_trace(
