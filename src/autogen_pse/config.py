@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.deepseek.com/v1"
     OPENAI_MODEL: str = "deepseek-chat"
 
+    # Model streaming (disable for providers with unstable streaming like Agnes free tier)
+    PSE_MODEL_STREAM: bool = True
+
     # External project paths (for portfolio-review)
     ASSET_LENS_DIR: str = ""
     MONEY_CSV_DIR: str = ""
@@ -40,8 +43,22 @@ class Settings(BaseSettings):
     PSE_LARGE_POS_MIN_AMOUNT: int = 0
     PSE_LARGE_POS_MAX_RETURN: float = 0.0
 
+    # Current loss detection (any holding period)
+    PSE_CUR_LOSS_THRESHOLD: float = -5.0
+    PSE_CUR_LOSS_MIN_AMOUNT: int = 3000
+
     # Market indices (comma-separated, must be set in .env)
     MARKET_INDICES: str = ""
+
+    # Property column mapping (CSV header names, keep in .env for privacy)
+    PROP_CORE_VALUE: str = ""
+    PROP_CORE_ESTIMATE: str = ""
+    PROP_CORE_DIFF: str = ""
+    PROP_CORE_UNITS: str = ""
+    PROP_CORE_PRICE: str = ""
+    PROP_CORE_LISTING: str = ""
+    PROP_DISTRICTS: str = ""  # comma-separated
+    PROP_OLD_VALUE: str = ""  # comma-separated
 
     # Web dashboard CORS
     CORS_ORIGINS: str = "http://localhost:5173"

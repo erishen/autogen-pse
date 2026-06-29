@@ -48,9 +48,39 @@ def load_json() -> dict:
         capture_output=True,
         text=True,
         timeout=120,
+        check=True,
     )
     path = _latest_output_file(".json")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def get_csv_date() -> str:
+    """返回最新 money-csv 数据日期（YYYYMMDD）。"""
+    dirs = sorted(CSV_DIR.glob("money_csv_*"), reverse=True)
+    if not dirs:
+        return ""
+    with open(dirs[0] / "资产汇总-表格 1.csv") as f:
+        rows = list(csv.DictReader(f))
+    return rows[-1]["日期"].replace(".", "")
+
+
+def check_freshness(json_path: Path) -> None:
+    """检查 JSON 数据日期是否与最新 CSV 一致，不一致则退出。"""
+    import re
+
+    m = re.search(r"(\d{8})", json_path.name)
+    if not m:
+        return
+    json_date = m.group(1)
+    csv_date = get_csv_date()
+    if not csv_date:
+        return
+    if json_date < csv_date:
+        print(
+            f"❌ 数据过期: JSON 截止 {json_date}，CSV 已有 {csv_date} 的数据\n"
+            f"   请先确保 asset-lens 的 make calculate 执行成功，再重试。"
+        )
+        sys.exit(1)
 
 
 def load_products() -> list:
@@ -143,6 +173,26 @@ def _env_list(key: str) -> list:
     return [x.strip() for x in val.split(",")]
 
 
+def _env_str(key: str, default: str = "") -> str:
+    return os.getenv(key, default)
+
+
+# 房产列名（从 .env 读取，代码中不暴露具体名称）
+PROP_CORE_VALUE = _env_str("PROP_CORE_VALUE")
+PROP_CORE_ESTIMATE = _env_str("PROP_CORE_ESTIMATE")
+PROP_CORE_DIFF = _env_str("PROP_CORE_DIFF")
+PROP_CORE_UNITS = _env_str("PROP_CORE_UNITS")
+PROP_CORE_PRICE = _env_str("PROP_CORE_PRICE")
+PROP_CORE_LISTING = _env_str("PROP_CORE_LISTING")
+PROP_DISTRICTS = _env_list("PROP_DISTRICTS") if os.getenv("PROP_DISTRICTS") else []
+PROP_OLD = _env_list("PROP_OLD_VALUE") if os.getenv("PROP_OLD_VALUE") else []
+
+# 市场数据列名
+GOLD_GLD_COL = _env_str("GOLD_GLD_COL", "")
+GOLD_DOMESTIC_COL = _env_str("GOLD_DOMESTIC_COL", "")
+GOLD_EXCHANGE_COL = _env_str("GOLD_EXCHANGE_COL", "")
+
+
 LONG_LOSS_DAYS = _env_int("PSE_LONG_LOSS_DAYS")
 LOW_EFF_DAYS = _env_int("PSE_LOW_EFF_DAYS")
 LOW_EFF_MAX_RETURN = _env_float("PSE_LOW_EFF_MAX_RETURN")
@@ -153,6 +203,8 @@ HIGH_VOL_MIN_AMOUNT = _env_int("PSE_HIGH_VOL_MIN_AMOUNT")
 LARGE_POS_TYPES = _env_list("PSE_LARGE_POS_TYPES")
 LARGE_POS_MIN_AMOUNT = _env_int("PSE_LARGE_POS_MIN_AMOUNT")
 LARGE_POS_MAX_RETURN = _env_float("PSE_LARGE_POS_MAX_RETURN")
+CUR_LOSS_THRESHOLD = _env_float("PSE_CUR_LOSS_THRESHOLD")
+CUR_LOSS_MIN_AMOUNT = _env_int("PSE_CUR_LOSS_MIN_AMOUNT")
 
 
 def detect_issues(products: list) -> str:
@@ -160,10 +212,12 @@ def detect_issues(products: list) -> str:
     low_eff = []
     volatile = []
     big_fixed = []
+    cur_loss = []
 
     for r in products:
         name = r.get("\ufeff名称", r.get("名称", ""))
         typ = r.get("类型", "")
+        plat = r.get("所属平台", "")
         try:
             days = int(r.get("投资天数", "0") or "0")
             ann = float(r.get("年化收益率(%)", "0") or "0")
@@ -180,7 +234,7 @@ def detect_issues(products: list) -> str:
             and 0 <= ann < LOW_EFF_MAX_RETURN
             and amt > LOW_EFF_MIN_AMOUNT
         ):
-            line = f"- ¥{amt / 10000:.1f}万 | {name[:20]} | {days}天 | 年化{ann:.1f}%"
+            line = f"- ¥{amt / 10000:.1f}万 | {name[:20]} | {plat} | {days}天 | 年化{ann:.1f}%"
             low_eff.append((amt, line))
         if (
             ann > HIGH_VOL_MIN_RETURN
@@ -198,6 +252,9 @@ def detect_issues(products: list) -> str:
         ):
             line = f"- ¥{amt / 10000:.0f}万 | {name[:20]} | {typ} | 年化{ann:.1f}%"
             big_fixed.append((amt, line))
+        if real_val < CUR_LOSS_THRESHOLD and amt > CUR_LOSS_MIN_AMOUNT:
+            line = f"- ¥{amt / 10000:.1f}万 | {name[:22]} | {plat} | {typ} | {days}天 | 实亏{real_val:+.1f}%（年化{ann:+.0f}%）"
+            cur_loss.append((real_val, line))
 
     # 平台集中度
     pt: dict = {}
@@ -258,6 +315,12 @@ def detect_issues(products: list) -> str:
         loss.sort(key=lambda x: -x[0])
         body = "\n".join(line for _, line in loss)
         sections.append(f"### 需关注 — 长期亏损（{len(loss)}只）\n{body}")
+    if cur_loss:
+        cur_loss.sort()  # 从最亏到最不亏
+        body = "\n".join(line for _, line in cur_loss)
+        sections.append(
+            f"### 当期亏损（{len(cur_loss)}只，收益 < {CUR_LOSS_THRESHOLD}%）\n{body}"
+        )
     if low_eff or big_fixed:
         items = low_eff + big_fixed
         seen: dict = {}
@@ -312,13 +375,311 @@ def get_market() -> tuple[str, str]:
         rows = list(csv.DictReader(f))
     pv, cv = rows[-2], rows[-1]
     data_date = cv["日期"].replace(".", "")  # "2026.06.19" → "20260619"
-    indices = [(name, name) for name in MARKET_INDICES]
+
     lines = [f"## 市场行情快照（截止 {cv['日期']}，非实时数据）", ""]
-    for name, col in indices:
-        p, c = float(pv[col]), float(cv[col])
-        chg = (c - p) / abs(p) * 100 if p else 0
-        lines.append(f"- {name}: {cv[col]} | {'+' if chg > 0 else ''}{chg:.2f}%")
+
+    # 从 MARKET_INDICES 配置动态读取，不再硬编码分组
+    indices = MARKET_INDICES
+    lines.append("| 指标 | 值 | 周变化 |")
+    lines.append("|------|:---:|:-----:|")
+    for name in indices:
+        try:
+            p, c = float(pv[name]), float(cv[name])
+            chg = (c - p) / abs(p) * 100 if p else 0
+            lines.append(
+                f"| {name} | {cv[name]} | {'+' if chg > 0 else ''}{chg:.2f}% |"
+            )
+        except (ValueError, KeyError):
+            pass
+
+    # 额外指标（非行情指数但有用）
+    extra_cols = []
+    extra_cols = []
+    extra_names = _env_list("MARKET_EXTRA") if os.getenv("MARKET_EXTRA") else []
+    for name in extra_names:
+        extra_cols.append((name, name))
+    lines.append("")
+    lines.append("| 指标 | 值 | 周变化 |")
+    lines.append("|------|:---:|:-----:|")
+    for name, col in extra_cols:
+        try:
+            p, c = float(pv[col]), float(cv[col])
+            chg = (c - p) / abs(p) * 100 if p else 0
+            lines.append(f"| {name} | {cv[col]} | {'+' if chg > 0 else ''}{chg:.2f}% |")
+        except (ValueError, KeyError):
+            pass
+
     return data_date, "\n".join(lines)
+
+
+def build_gold_trend() -> str:
+    """读取最近 8 周黄金价格趋势，返回简短 markdown。"""
+    dirs = sorted(CSV_DIR.glob("money_csv_*"), reverse=True)
+    if not dirs:
+        return ""
+    rows = []
+    for d in dirs[:8]:
+        f = d / "资产汇总-表格 1.csv"
+        if not f.exists():
+            continue
+        with open(f) as fp:
+            data = list(csv.DictReader(fp))
+        if data:
+            rows.append(data[-1])
+    if len(rows) < 2:
+        return ""
+
+    gl = []
+    for r in rows:
+        try:
+            gld = float(r.get(GOLD_GLD_COL, "0") or "0")
+            gold = float(r.get(GOLD_DOMESTIC_COL, "0") or "0")
+            ex_g = float(r.get(GOLD_EXCHANGE_COL, "0") or "0")
+            gl.append((r["日期"], gld, gold, ex_g))
+        except (ValueError, KeyError):
+            continue
+    gl.sort()
+
+    if len(gl) < 2:
+        return ""
+
+    lines = ["## 黄金价格趋势（近 8 周）", ""]
+    lines.append("| 日期 | GLD (美元) | 国内金价 | 兑换值 | 周变化 |")
+    lines.append("|------|:---------:|:-------:|:-----:|:------:|")
+    for i, (d, gld, gold, ex) in enumerate(gl):
+        chg = ""
+        if i > 0:
+            prev = gl[i - 1][1]
+            pct = (gld - prev) / prev * 100 if prev else 0
+            chg = f"{'+' if pct > 0 else ''}{pct:.1f}%"
+        lines.append(f"| {d} | {gld:.2f} | {gold:.0f} | {ex:.2f} | {chg} |")
+
+    # 总结
+    curr = gl[-1]
+    peak_8w = max(g[1] for g in gl)
+    trough_8w = min(g[1] for g in gl)
+    chg_8w = (curr[1] - gl[0][1]) / gl[0][1] * 100
+    chg_4w = (curr[1] - gl[-5][1]) / gl[-5][1] * 100 if len(gl) >= 5 else 0
+
+    lines.append("")
+    lines.append(f"- 近 4 周变化: **{chg_4w:+.1f}%**")
+    lines.append(f"- 近 8 周变化: **{chg_8w:+.1f}%**")
+    lines.append(f"- 8 周高/低: {peak_8w:.2f} / {trough_8w:.2f}")
+    lines.append(
+        f"- 当前距 8 周低点: **{(curr[1] - trough_8w) / trough_8w * 100:+.1f}%**"
+    )
+    return "\n".join(lines)
+
+
+def build_property_trend() -> str:
+    """读取最近 8 周房产数据，返回简短 markdown。列名从 .env 读取，代码不暴露具体名称。"""
+    if not PROP_CORE_VALUE:
+        return ""  # 未配置房产列名，跳过
+    dirs = sorted(CSV_DIR.glob("money_csv_*"), reverse=True)
+    if not dirs:
+        return ""
+    all_rows = []
+    for d in dirs[:8]:
+        f = d / "资产汇总-表格 1.csv"
+        if not f.exists():
+            continue
+        with open(f) as fp:
+            data = list(csv.DictReader(fp))
+        if data:
+            all_rows.append(data[-1])
+    if len(all_rows) < 2:
+        return ""
+
+    # 核心住宅数据
+    core = []
+    for r in all_rows:
+        try:
+            val = float(r.get(PROP_CORE_VALUE, "0") or "0")
+            est = (
+                float(r.get(PROP_CORE_ESTIMATE, "0") or "0")
+                if PROP_CORE_ESTIMATE
+                else 0
+            )
+            diff = float(r.get(PROP_CORE_DIFF, "0") or "0") if PROP_CORE_DIFF else 0
+            units = (
+                int(float(r.get(PROP_CORE_UNITS, "0") or "0")) if PROP_CORE_UNITS else 0
+            )
+            price = float(r.get(PROP_CORE_PRICE, "0") or "0") if PROP_CORE_PRICE else 0
+            listing = (
+                float(r.get(PROP_CORE_LISTING, "0") or "0") if PROP_CORE_LISTING else 0
+            )
+            core.append((r["日期"], val, est, diff, units, price, listing))
+        except (ValueError, KeyError):
+            continue
+    core.sort()
+
+    # 周边区域
+    districts_data = []
+    for r in all_rows:
+        try:
+            row = [r["日期"]]
+            for c in PROP_DISTRICTS:
+                row.append(float(r.get(c, "0") or "0"))
+            districts_data.append(tuple(row))
+        except (ValueError, KeyError):
+            continue
+    districts_data.sort()
+
+    # 旧资产
+    old_data = []
+    for r in all_rows:
+        try:
+            row = [r["日期"]]
+            for c in PROP_OLD:
+                row.append(float(r.get(c, "0") or "0"))
+            old_data.append(tuple(row))
+        except (ValueError, KeyError):
+            continue
+    old_data.sort()
+
+    if len(core) < 2:
+        return ""
+
+    cur = core[-1]
+    first = core[0]
+    prev = core[-2]
+    cur_d = districts_data[-1] if districts_data else None
+    first_d = districts_data[0] if districts_data else None
+    cur_o = old_data[-1] if old_data else None
+    first_o = old_data[0] if old_data else None
+
+    lines = ["## 房产快照", ""]
+
+    # 核心住宅
+    lines.append("### 核心住宅")
+    parts = []
+    if cur[1]:
+        parts.append(f"当前价值: **¥{cur[1]:.1f}万**")
+    if cur[2]:
+        parts.append(f"估价: ¥{cur[2]:.1f}万")
+    if PROP_CORE_DIFF:
+        parts.append(f"差价: ¥{cur[3]:.1f}万")
+    lines.append("- " + " | ".join(parts))
+    extra = []
+    if PROP_CORE_LISTING and cur[6]:
+        extra.append(f"挂牌: ¥{cur[6]:.0f}/m²")
+    if PROP_CORE_PRICE and cur[5]:
+        extra.append(f"成交: ¥{cur[5]:.0f}/m²")
+    if PROP_CORE_UNITS and cur[4]:
+        extra.append(f"在售: {cur[4]} 套（周 {cur[4] - prev[4]:+d}）")
+    if extra:
+        lines.append("- " + " | ".join(extra))
+    val_8w = (cur[1] - first[1]) / first[1] * 100
+    lines.append(f"- 8 周价值变化: **{val_8w:+.1f}%**")
+
+    # 周边区域
+    if cur_d and first_d and PROP_DISTRICTS:
+        lines.append("")
+        lines.append("### 周边区域")
+        lines.append("| 区域 | 最新 | 8周前 | 变化 |")
+        lines.append("|------|:---:|:---:|:---:|")
+        for i, label in enumerate(PROP_DISTRICTS):
+            c_val = cur_d[i + 1]
+            f_val = first_d[i + 1]
+            chg = (c_val - f_val) / f_val * 100 if f_val else 0
+            lines.append(f"| {label} | {c_val:.2f} | {f_val:.2f} | {chg:+.1f}% |")
+
+    # 旧资产
+    if cur_o and first_o and PROP_OLD:
+        lines.append("")
+        lines.append("### 旧资产")
+        lines.append("| 名称 | 最新 | 8周前 | 变化 |")
+        lines.append("|------|:---:|:---:|:---:|")
+        for i, label in enumerate(PROP_OLD):
+            c_val = cur_o[i + 1]
+            f_val = first_o[i + 1]
+            chg = (c_val - f_val) / f_val * 100 if f_val else 0
+            lines.append(f"| {label} | {c_val:.2f} | {f_val:.2f} | {chg:+.1f}% |")
+
+    # 综合判断
+    if PROP_CORE_DIFF and cur[3] < -15:
+        signal = "⚠️ 估价显著低于价值，关注市场下行"
+    elif PROP_CORE_DIFF and cur[3] > 10:
+        signal = "✅ 估价高于价值，资产溢价"
+    else:
+        signal = "➡️ 估价与价值接近，市场平稳"
+    lines.append(f"\n{signal}")
+
+    return "\n".join(lines)
+
+
+def build_exchange_rates() -> str:
+    """提取最新汇率数据，返回简短 markdown。"""
+    dirs = sorted(CSV_DIR.glob("money_csv_*"), reverse=True)
+    if not dirs:
+        return ""
+    with open(dirs[0] / "资产汇总-表格 1.csv") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return ""
+    r = rows[-1]
+    try:
+        usd = float(r.get("美元汇率", "0") or "1")
+        hkd = float(r.get("港元汇率", "0") or "1")
+    except (ValueError, KeyError):
+        return ""
+    lines = ["## 汇率快照", ""]
+    lines.append(f"- 美元/人民币: {usd:.4f}")
+    lines.append(f"- 港元/人民币: {hkd:.4f}")
+    return "\n".join(lines)
+
+
+def build_dca_review(products: list) -> str:
+    """识别定投产品并列出当前收益状态。"""
+    dca_products = []
+    for r in products:
+        name = r.get("\ufeff名称", r.get("名称", ""))
+        typ = r.get("类型", "")
+        if "定投" not in typ:
+            continue
+        try:
+            amt = float(r.get("当前金额", "0") or "0")
+            real_val = float(r.get("实际收益率(%)", "0") or "0")
+            days = int(r.get("投资天数", "0") or "0")
+            ann = float(r.get("年化收益率(%)", "0") or "0")
+            dca_products.append((name, amt, real_val, days, ann))
+        except (ValueError, TypeError):
+            continue
+    if not dca_products:
+        return ""
+
+    dca_products.sort(key=lambda x: -x[1])
+    lines = ["## 定投审查", ""]
+    for name, amt, real_val, days, ann in dca_products:
+        status = "✅" if real_val > 0 else "⚠️" if real_val > -5 else "🔴"
+        lines.append(
+            f"- {status} {name[:25]} | ¥{amt:.0f} | {days}天 | 实{real_val:+.1f}% | 年化{ann:+.0f}%"
+        )
+    return "\n".join(lines)
+
+
+def build_c_class_alert(products: list) -> str:
+    """检测 C 类份额长持，计算费率差异。"""
+    alerts = []
+    for r in products:
+        name = r.get("\ufeff名称", r.get("名称", ""))
+        if "C" not in name and "Y" not in name:
+            continue
+        try:
+            days = int(r.get("投资天数", "0") or "0")
+            amt = float(r.get("当前金额", "0") or "0")
+        except (ValueError, TypeError):
+            continue
+        if days > 180 and amt > 1000:
+            extra = amt * 0.004
+            alerts.append((name, days, amt, extra))
+    if not alerts:
+        return ""
+    alerts.sort(key=lambda x: -x[2])
+    lines = ["## C类份额费率提醒", ""]
+    for name, days, amt, extra in alerts:
+        lines.append(f"- {name[:25]} | {days}天 | ¥{amt:.0f} | 预估年多付 ¥{extra:.0f}")
+    return "\n".join(lines)
 
 
 # ── 主入口 ──
@@ -327,8 +688,13 @@ def get_market() -> tuple[str, str]:
 def main():
     data = load_json()
     products = load_products()
+    check_freshness(_latest_output_file(".json"))
     data_date, market = get_market()
-    # 用数据截止日期，不是脚本运行日期
+    gold_trend = build_gold_trend()
+    property_trend = build_property_trend()
+    exchange_rates = build_exchange_rates()
+    dca_review = build_dca_review(products)
+    c_class_alert = build_c_class_alert(products)
     snapshot_date = f"{data_date[:4]}年{data_date[4:6]}月{data_date[6:8]}日"
 
     md = f"""# 投资周报分析
@@ -343,6 +709,16 @@ def main():
 ## 自动检测问题
 
 {detect_issues(products)}
+
+{gold_trend}
+
+{property_trend}
+
+{exchange_rates}
+
+{dca_review}
+
+{c_class_alert}
 
 ## 资产配置
 

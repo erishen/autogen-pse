@@ -142,6 +142,15 @@ def run_ruff(path: str = ".") -> str:
 
 
 def bash(command: str, timeout: int = 30) -> str:
+    # 禁止通过 bash heredoc 写入文件（内容过长时闭合符易被截断，导致文件损坏）
+    import re
+
+    if re.search(r"(cat|tee|python)\s+.*>\s*\S+.*<<\s*['\"]?\w*['\"]?", command):
+        return (
+            "[禁止] 不允许在 bash 中使用 heredoc 写入文件（存在截断风险）。"
+            "请使用 write_file 工具代替。"
+        )
+
     try:
         result = subprocess.run(
             command,
@@ -252,7 +261,19 @@ def format_knowledge_context(knowledge: dict[str, list[dict[str, Any]]]) -> str:
         "=== 投资人个人知识库（投资偏好、策略经验） ===",
         "",
     ]
+    INVEST_CATS = {
+        "01-Investment",
+        "03-Financial",
+        "advice",
+        "financial",
+        "investment",
+        "strategy",
+    }
     for query, docs in knowledge.items():
+        if not docs:
+            continue
+        # 只保留与投资相关的分类，过滤掉个人简介、工作经验等无关内容
+        docs = [d for d in docs if d.get("category", "") in INVEST_CATS]
         if not docs:
             continue
         lines.append(f"关于「{query}」的相关知识：")
