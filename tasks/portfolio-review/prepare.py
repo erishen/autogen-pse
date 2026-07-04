@@ -89,6 +89,27 @@ def load_products() -> list:
         return list(csv.DictReader(f))
 
 
+def _get_exchange_rates() -> tuple[float, float]:
+    """从 money-csv 最后一行提取美元/港元汇率。"""
+    dirs = sorted(CSV_DIR.glob("money_csv_*"), reverse=True)
+    if not dirs:
+        return 1.0, 1.0
+    f = dirs[0] / "资产汇总-表格 1.csv"
+    if not f.exists():
+        return 1.0, 1.0
+    with open(f, encoding="utf-8-sig") as fp:
+        rows = list(csv.DictReader(fp))
+    if not rows:
+        return 1.0, 1.0
+    last = rows[-1]
+    try:
+        usd = float(str(last.get("美元汇率", "1")).replace("%", ""))
+        hkd = float(str(last.get("港元汇率", "1")).replace("%", ""))
+    except (ValueError, TypeError):
+        return 1.0, 1.0
+    return usd, hkd
+
+
 # ── 报告生成 ──
 
 
@@ -131,6 +152,80 @@ def build_allocation(data: dict) -> str:
         else:
             lines.append(f"  {_name}: {pct}（{amt:.0f}元）")
     return "\n".join(lines)
+
+
+def build_role_breakdown(data: dict) -> str:
+    """按资产角色分层计算占比，供 Specialist 引用（避免用风险分布替代）。"""
+    items = data.get("type_distribution", {})
+    growth_types = {"基金", "美元基金", "美元基金（美元）", "美股", "定投基金", "ETF", "个股"}
+    defense_types = {"债券", "特别国债", "公募固收", "高端理财"}
+    liquid_types = {"理财", "货币", "券商理财"}
+    gold_types = {"黄金"}
+
+    growth_pct, growth_amt = 0.0, 0.0
+    defense_pct, defense_amt = 0.0, 0.0
+    liquid_pct, liquid_amt = 0.0, 0.0
+    gold_pct, gold_amt = 0.0, 0.0
+
+    for name, info in items.items():
+        pct = float(str(info.get("percentage", "0%")).rstrip("%"))
+        amt = float(info.get("total_value", 0))
+        if name in growth_types:
+            growth_pct += pct
+            growth_amt += amt
+        elif name in defense_types:
+            defense_pct += pct
+            defense_amt += amt
+        elif name in liquid_types:
+            liquid_pct += pct
+            liquid_amt += amt
+        elif name in gold_types:
+            gold_pct += pct
+            gold_amt += amt
+
+    return (
+        f"  增长引擎: {growth_pct:.2f}%（{growth_amt / 10000:.1f}万元）\n"
+        f"  防御底仓: {defense_pct:.2f}%（{defense_amt / 10000:.1f}万元）\n"
+        f"  流动性储备: {liquid_pct:.2f}%（{liquid_amt / 10000:.1f}万元）\n"
+        f"  黄金: {gold_pct:.2f}%（{gold_amt / 10000:.1f}万元）"
+    )
+
+
+def build_growth_details(products: list) -> str:
+    """列出增长引擎每只产品的关键数据，供 Specialist 逐只分析加减仓。"""
+    growth_types = {"基金", "美元基金", "美元基金（美元）", "美股", "定投基金", "ETF", "个股"}
+    skip_keywords = set(os.getenv("GROWTH_SKIP_KEYWORDS", "").split(",")) if os.getenv("GROWTH_SKIP_KEYWORDS") else set()
+    skip_platforms = set(os.getenv("GROWTH_SKIP_PLATFORMS", "").split(",")) if os.getenv("GROWTH_SKIP_PLATFORMS") else set()
+    usd_rate, hkd_rate = _get_exchange_rates()
+    lines = ["| 名称 | 平台 | 金额 | 天数 | 实亏 | 年化 |", "|------|------|:---:|:---:|:---:|:---:|"]
+    for r in products:
+        typ = r.get("类型", "")
+        if typ not in growth_types:
+            continue
+        name = r.get("\ufeff名称", r.get("名称", ""))[:22]
+        if any(kw in name for kw in skip_keywords):
+            continue
+        plat = r.get("所属平台", "")
+        if plat in skip_platforms:  # 不展示的平台
+            continue
+        try:
+            amt = float(r.get("当前金额", "0") or "0")
+            # 汇率转换：根据平台选择对应汇率
+            usd_platforms = set(os.getenv("GROWTH_USD_PLATFORMS", "").split(",")) if os.getenv("GROWTH_USD_PLATFORMS") else set()
+            hkd_platforms = set(os.getenv("GROWTH_HKD_PLATFORMS", "").split(",")) if os.getenv("GROWTH_HKD_PLATFORMS") else set()
+            if "美元" in typ or plat in usd_platforms:
+                amt *= usd_rate
+            elif plat in hkd_platforms:
+                amt *= hkd_rate
+            days = int(r.get("投资天数", "0") or "0")
+            real_val = float(r.get("实际收益率(%)", "0") or "0")
+            ann = float(r.get("年化收益率(%)", "0") or "0")
+        except (ValueError, TypeError):
+            continue
+        lines.append(
+            f"| {name} | {plat} | ¥{amt/10000:.2f}万 | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
+        )
+    return "\n".join(lines) if len(lines) > 2 else ""
 
 
 def build_risk(data: dict) -> str:
@@ -206,6 +301,9 @@ LARGE_POS_MAX_RETURN = _env_float("PSE_LARGE_POS_MAX_RETURN")
 CUR_LOSS_THRESHOLD = _env_float("PSE_CUR_LOSS_THRESHOLD")
 CUR_LOSS_MIN_AMOUNT = _env_int("PSE_CUR_LOSS_MIN_AMOUNT")
 
+# 固收类产品类型，报告中只聚合不逐只列出
+FIXED_INCOME_TYPES = {"理财", "债券", "高端理财", "货币", "券商理财", "短债"}
+
 
 def detect_issues(products: list) -> str:
     loss = []
@@ -235,7 +333,7 @@ def detect_issues(products: list) -> str:
             and amt > LOW_EFF_MIN_AMOUNT
         ):
             line = f"- ¥{amt / 10000:.1f}万 | {name[:20]} | {plat} | {days}天 | 年化{ann:.1f}%"
-            low_eff.append((amt, line))
+            low_eff.append((amt, typ, line))
         if (
             ann > HIGH_VOL_MIN_RETURN
             and days < HIGH_VOL_MAX_DAYS
@@ -251,7 +349,7 @@ def detect_issues(products: list) -> str:
             and ann < LARGE_POS_MAX_RETURN
         ):
             line = f"- ¥{amt / 10000:.0f}万 | {name[:20]} | {typ} | 年化{ann:.1f}%"
-            big_fixed.append((amt, line))
+            big_fixed.append((amt, typ, line))
         if real_val < CUR_LOSS_THRESHOLD and amt > CUR_LOSS_MIN_AMOUNT:
             line = f"- ¥{amt / 10000:.1f}万 | {name[:22]} | {plat} | {typ} | {days}天 | 实亏{real_val:+.1f}%（年化{ann:+.0f}%）"
             cur_loss.append((real_val, line))
@@ -271,10 +369,14 @@ def detect_issues(products: list) -> str:
     ]
 
     # 同类重复 — 动态发现产品名中的高频词
+    # 过滤固收类产品名模式：理财/债券的碎片化是常态，不视为重复
     words: Counter[str] = Counter()
     name_map: dict = {}
     for r in products:
         name = r.get("\ufeff名称", r.get("名称", ""))
+        typ = r.get("类型", "")
+        if typ in FIXED_INCOME_TYPES:  # 理财/债券等不参与重复检测
+            continue
         try:
             amt = float(r.get("当前金额", "0") or "0")
         except (ValueError, TypeError):
@@ -323,14 +425,33 @@ def detect_issues(products: list) -> str:
         )
     if low_eff or big_fixed:
         items = low_eff + big_fixed
+        # 分离固收类（理财/债券）和其他产品
+        fixed_income = []
+        others = []
+        for amt, typ, line in items:
+            if typ in FIXED_INCOME_TYPES:
+                fixed_income.append((amt, typ, line))
+            else:
+                others.append((amt, typ, line))
+        # 固收类聚合为一行摘要
+        sections_parts = []
+        if fixed_income:
+            total_amt = sum(amt for amt, _, _ in fixed_income)
+            min_ret = min(float(l.split("年化")[1].split("%")[0]) for _, _, l in fixed_income if "年化" in l)
+            max_ret = max(float(l.split("年化")[1].split("%")[0]) for _, _, l in fixed_income if "年化" in l)
+            sections_parts.append(
+                f"- 💰 低效固收：¥{total_amt/10000:.0f}万（{len(fixed_income)}只，年化{min_ret:.1f}%-{max_ret:.1f}%），明细见原始数据"
+            )
+        # 其他产品逐只列出
         seen: dict = {}
-        for amt, line in items:
+        for amt, typ, line in others:
             key = line.split("|")[1].strip()
             if key not in seen or amt > seen[key][0]:
                 seen[key] = (amt, line)
         deduped = sorted(seen.values(), key=lambda x: -x[0])
-        body = "\n".join(line for _, line in deduped)
-        sections.append(f"### 资金效率低（{len(deduped)}项）\n{body}")
+        sections_parts.extend(line for _, line in deduped)
+        body = "\n".join(sections_parts)
+        sections.append(f"### 资金效率低（{len(items)}项）\n{body}")
     if volatile:
         volatile.sort(key=lambda x: -x[0])
         body = "\n".join(line for _, line in volatile)
@@ -403,7 +524,8 @@ def get_market() -> tuple[str, str]:
     lines.append("|------|:---:|:-----:|")
     for name, col in extra_cols:
         try:
-            p, c = float(pv[col]), float(cv[col])
+            p_raw, c_raw = str(pv[col]), str(cv[col])
+            p, c = float(p_raw.replace("%", "")), float(c_raw.replace("%", ""))
             chg = (c - p) / abs(p) * 100 if p else 0
             lines.append(f"| {name} | {cv[col]} | {'+' if chg > 0 else ''}{chg:.2f}% |")
         except (ValueError, KeyError):
@@ -663,7 +785,10 @@ def build_c_class_alert(products: list) -> str:
     alerts = []
     for r in products:
         name = r.get("\ufeff名称", r.get("名称", ""))
+        typ = r.get("类型", "")
         if "C" not in name and "Y" not in name:
+            continue
+        if typ in FIXED_INCOME_TYPES:  # 理财/债券 C 类不逐只列出
             continue
         try:
             days = int(r.get("投资天数", "0") or "0")
@@ -695,6 +820,7 @@ def main():
     exchange_rates = build_exchange_rates()
     dca_review = build_dca_review(products)
     c_class_alert = build_c_class_alert(products)
+    growth_details = build_growth_details(products)
     snapshot_date = f"{data_date[:4]}年{data_date[4:6]}月{data_date[6:8]}日"
 
     md = f"""# 投资周报分析
@@ -723,6 +849,14 @@ def main():
 ## 资产配置
 
 {build_allocation(data)}
+
+## 角色分层占比
+
+{build_role_breakdown(data)}
+
+## 增长引擎持仓明细（逐只分析加减仓）
+
+{build_growth_details(products)}
 
 ## 风险分布
 

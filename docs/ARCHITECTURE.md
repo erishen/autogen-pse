@@ -56,7 +56,7 @@ tasks/<task-name>/
 
 ### 2. PSE 三角色设计
 
-灵感源自 [agentic-souls](https://github.com/erishen/agentic-souls) 的文档驱动开发模式，将软件开发中的"计划→执行→验证"循环映射到投资分析场景。
+灵感源自 agentic-souls 的文档驱动开发模式，将软件开发中的"计划→执行→验证"循环映射到投资分析场景。
 
 #### Planner（规划者）
 

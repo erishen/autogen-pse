@@ -14,7 +14,7 @@ load_dotenv(BASE.parent.parent / ".env")
 DATA_DIR = os.getenv("MONEY_CSV_DIR")
 if not DATA_DIR:
     sys.exit("请先配置 .env 中的 MONEY_CSV_DIR")
-DATA_DIR = Path(DATA_DIR)
+DATA_DIR = (BASE.parent.parent / DATA_DIR).resolve()  # 从项目根解析相对路径
 PROMPT_FILE = BASE / "output/portfolio_review_prompt.md"
 _MARKET_INDICES = os.getenv("MARKET_INDICES")
 if not _MARKET_INDICES:

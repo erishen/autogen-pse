@@ -1,8 +1,29 @@
-"""加载系统提示词。"""
+"""加载系统提示词，自动注入私密规则文件。"""
 
 from pathlib import Path
 
 PROMPTS_DIR = Path(__file__).parent.parent.parent / "tasks"
+
+
+def _load_private_rules(task_dir: Path, name: str) -> str:
+    """加载任务私密规则文件（_rules.md），不存在时返回空字符串。"""
+    rules_path = task_dir / f"{name}_rules.md"
+    if rules_path.exists():
+        return rules_path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _inject_rules(template: str, name: str, task_dir: Path) -> str:
+    """将 {INVESTMENT_RULES} / {STOP_LOSS_RULES} 占位符替换为私密规则文件内容。"""
+    rules = _load_private_rules(task_dir, name)
+    if not rules:
+        return template
+
+    # 替换可能的占位符
+    for placeholder in ("INVESTMENT_RULES", "STOP_LOSS_RULES"):
+        key = "{" + placeholder + "}"
+        template = template.replace(key, rules)
+    return template
 
 
 def load_prompt(name: str, task: str | None = None) -> str:
@@ -16,9 +37,12 @@ def load_prompt(name: str, task: str | None = None) -> str:
         完整的系统提示词文本
     """
     if task:
-        prompt_path = PROMPTS_DIR / task / "prompts" / f"{name}.md"
+        task_dir = PROMPTS_DIR / task
+        prompt_path = task_dir / "prompts" / f"{name}.md"
         if prompt_path.exists():
-            return prompt_path.read_text(encoding="utf-8")
+            template = prompt_path.read_text(encoding="utf-8")
+            return _inject_rules(template, name, task_dir / "prompts")
+
     # 回退到通用提示词
     prompt_path = PROMPTS_DIR / "demo" / "prompts" / f"{name}.md"
     if not prompt_path.exists():

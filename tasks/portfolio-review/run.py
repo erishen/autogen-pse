@@ -108,6 +108,50 @@ def extract_review_from_trace(task: str) -> str | None:
     return f"# 投资组合诊断 — 最终结论\n\n{last[cutoff:].strip()}"
 
 
+_DEFENSE_KEYWORDS = {}
+
+
+def sanitize_review(text: str) -> str:
+    """后处理：强制修正 LLM 输出的明显违规。
+    - 防御底仓（红利/黄金）卖出建议 → 改为持有观察（除非亏损超过 -30%）
+    - 小额持仓（< ¥1万）的买卖建议 → 移除
+    """
+    lines = text.split("\n")
+    result = []
+    for line in lines:
+        stripped = line.strip()
+        # 只处理建议操作行（以 - [优先级] 开头）
+        if not re.match(r"^- \[[^\]]+\]\s*(卖出|买入|卖出|清仓)", stripped):
+            result.append(line)
+            continue
+
+        # 提取金额
+        amt_match = re.search(r"¥(\d+\.?\d*)\s*万", stripped)
+        if not amt_match:
+            result.append(line)
+            continue
+        amt_wan = float(amt_match.group(1))
+
+        # 小额持仓过滤：仅对固收/理财类（非增长引擎）移除
+        is_fixed = any(kw in stripped for kw in {"理财", "债券", "货币", "固收", "短债"})
+        if amt_wan < 1.0 and is_fixed:
+            continue
+
+        # 防御底仓（红利/黄金）卖出检查 — 只看产品部分，不看「→」后的去向
+        product_part = stripped.split("→")[0].split("|")[0]
+        is_defense = any(kw in product_part for kw in _DEFENSE_KEYWORDS)
+        is_sell = any(kw in product_part for kw in ["卖出", "清仓"])
+        if is_defense and is_sell:
+            # 提取亏损幅度
+            loss_match = re.search(r"[-−](\d+\.?\d*)%", stripped)
+            loss = abs(float(loss_match.group(1))) if loss_match else 0
+            if loss < 30:  # 未触发 -30% 止损 → 改为持有观察
+                line = re.sub(r"\[([^\]]+)\]\s*(卖出|清仓)", r"[\1] 持有观察（自动修正：未触发止损）", line)
+                line = line.replace("赎回后资金并入", "持有观察")
+        result.append(line)
+    return "\n".join(result)
+
+
 async def main():
     if not PROMPT_FILE.exists():
         print(f"❌ 未找到 {PROMPT_FILE}，请先运行 prepare.py（make summarize）")
@@ -134,6 +178,7 @@ async def main():
     # 从 trace 提取并保存 review 文件
     review = extract_review_from_trace(task)
     if review:
+        review = sanitize_review(review)
         review_file = BASE / f"output/weekly_review_{data_date}.md"
         review_file.write_text(review, encoding="utf-8")
         print(f"✅ Review 已保存 → {review_file}")

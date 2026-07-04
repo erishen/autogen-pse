@@ -1,4 +1,4 @@
-.PHONY: help demo review summarize market lint fix test dev serve kill review-deepseek review-agnes
+.PHONY: help demo review summarize market lint fix test dev serve kill review-deepseek review-agnes _auto-summarize
 
 VENV_PY := .venv/bin/python
 PY := $(shell command -v $(VENV_PY) 2>/dev/null || echo "python3")
@@ -30,35 +30,47 @@ market: ## 查看最新市场指数行情
 
 review: review-deepseek ## 默认用 DeepSeek V4 Pro（等价于 make review-deepseek）
 
+# 自动检测：比对 portfolio_review_prompt.md 日期 vs asset-lens / money-csv 最新数据
+_auto-summarize:
+	@ASSET_DIR=$(shell grep '^ASSET_LENS_DIR=' .env | cut -d= -f2); \
+	MONEY_DIR=$(shell grep '^MONEY_CSV_DIR=' .env | cut -d= -f2); \
+	PROMPT_DATE=$$(sed -n 's/.*截止 \([0-9]\{4\}\)年\([0-9]\{2\}\)月\([0-9]\{2\}\)日.*/\1\2\3/p' tasks/portfolio-review/output/portfolio_review_prompt.md 2>/dev/null | head -1); \
+	[ -z "$$PROMPT_DATE" ] && PROMPT_DATE="00000000"; \
+	ASSET_DATE=$$(ls -t "$$ASSET_DIR"/output/投资收益率分析_*.json 2>/dev/null | head -1 | grep -o '[0-9]\{8\}' || echo "00000000"); \
+	MONEY_DATE=$$(ls -td "$$MONEY_DIR"/money_csv_* 2>/dev/null | head -1 | grep -o '[0-9]\{8\}' || echo "00000000"); \
+	if [ "$$ASSET_DATE" -gt "$$PROMPT_DATE" ] 2>/dev/null || [ "$$MONEY_DATE" -gt "$$PROMPT_DATE" ] 2>/dev/null; then \
+		echo "🔍 检测到新数据 (prompt: $$PROMPT_DATE  asset: $$ASSET_DATE  money: $$MONEY_DATE)，自动 summarize..."; \
+		$(MAKE) summarize; \
+	else \
+		echo "✅ 数据已是最新 (prompt: $$PROMPT_DATE  asset: $$ASSET_DATE  money: $$MONEY_DATE)"; \
+	fi
+
 # 开发模式：通过 MODEL 环境变量切换模型
 #   MODEL=your-model-name make dev-review      # DeepSeek Flash
 #   MODEL=llama3.1:8b       make dev-review      # 本地 Ollama
-dev-review: summarize
-	OPENAI_API_KEY=$(shell grep '^DEEPSEEK_KEY=' .env | cut -d= -f2) \
+dev-review: _auto-summarize
 	OPENAI_BASE_URL=https://api.example.com/v1 \
 	OPENAI_MODEL=$(MODEL) $(PY) tasks/portfolio-review/run.py
 
-local-review: summarize ## 开发模式：使用本地 Ollama llama3.1:8b
+local-review: _auto-summarize ## 开发模式：使用本地 Ollama llama3.1:8b
 	OPENAI_BASE_URL=http://localhost:11434/v1 \
 	OPENAI_MODEL=llama3.1:8b \
 	OPENAI_API_KEY=ollama \
 	$(PY) tasks/portfolio-review/run.py
 
-flash-review: summarize ## 开发模式：DeepSeek Flash（更快）
-	OPENAI_API_KEY=$(shell grep '^DEEPSEEK_KEY=' .env | cut -d= -f2) \
+flash-review: _auto-summarize ## 开发模式：DeepSeek Flash（更快）
 	OPENAI_BASE_URL=https://api.example.com/v1 \
 	OPENAI_MODEL=your-model-name \
 	$(PY) tasks/portfolio-review/run.py
 
 # ── 多模型快捷命令 ──
-review-deepseek: summarize ## 用 DeepSeek V4 Pro 跑周报（流式，稳定）
-	OPENAI_API_KEY=$(shell grep '^DEEPSEEK_KEY=' .env | cut -d= -f2) \
+review-deepseek: _auto-summarize ## 用 DeepSeek V4 Pro 跑周报（流式，稳定）
 	OPENAI_BASE_URL=https://api.example.com/v1 \
 	OPENAI_MODEL=your-model-name \
 	PSE_MODEL_STREAM=true \
 	$(PY) tasks/portfolio-review/run.py
 
-review-agnes: summarize ## 用 Agnes 2.0 Flash 跑周报（非流式，免费，放宽循环参数）
+review-agnes: _auto-summarize ## 用 Agnes 2.0 Flash 跑周报（非流式，免费，放宽循环参数）
 	OPENAI_API_KEY=$(shell grep '^AGNES_KEY=' .env | cut -d= -f2) \
 	OPENAI_BASE_URL=https://api.example.com/v1 \
 	OPENAI_MODEL=agnes-2.0-flash \

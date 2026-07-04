@@ -20,9 +20,68 @@ TASKS_DIR = ROOT / "tasks"
 TRACE_DIR = ROOT / "outputs" / "traces"
 WEB_DIST = ROOT / "web" / "dist"
 
+# 从 .env 读取外部数据目录，解析为绝对路径
+def _read_env(key: str, default: str = "") -> str:
+    """简单解析 .env 文件中的 key=value 行"""
+    env_file = ROOT / ".env"
+    if not env_file.exists():
+        return default
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    return default
+
+
+_ASSET_LENS_DIR = _read_env("ASSET_LENS_DIR")
+_MONEY_CSV_DIR = _read_env("MONEY_CSV_DIR")
+
+ASSET_LENS_OUTPUT = (ROOT / _ASSET_LENS_DIR / "output").resolve() if _ASSET_LENS_DIR else None
+MONEY_CSV_DATA_DIR = (ROOT / _MONEY_CSV_DIR).resolve() if _MONEY_CSV_DIR else None
+
 
 def _read_registry() -> dict:
     return json.loads((TASKS_DIR / "_registry.json").read_text())
+
+
+def _extract_prompt_date(task_name: str) -> str:
+    """从 portfolio_review_prompt.md 提取数据截止日期，返回 'YYYYMMDD' 或 '00000000'"""
+    prompt_file = TASKS_DIR / task_name / "output" / "portfolio_review_prompt.md"
+    if not prompt_file.exists():
+        return "00000000"
+    text = prompt_file.read_text(encoding="utf-8")
+    m = re.search(r"截止\s*(\d{4})年(\d{2})月(\d{2})日", text)
+    if m:
+        return f"{m.group(1)}{m.group(2)}{m.group(3)}"
+    return "00000000"
+
+
+def _get_latest_data_dates() -> tuple[str, str]:
+    """返回 (asset_lens 最新日期, money_csv 最新日期)，均为 'YYYYMMDD' 或 '00000000'"""
+    asset_date = "00000000"
+    if ASSET_LENS_OUTPUT and ASSET_LENS_OUTPUT.is_dir():
+        files = sorted(ASSET_LENS_OUTPUT.glob("投资收益率分析_*.json"), reverse=True)
+        if files:
+            m = re.search(r"(\d{8})", files[0].name)
+            if m:
+                asset_date = m.group(1)
+
+    money_date = "00000000"
+    if MONEY_CSV_DATA_DIR and MONEY_CSV_DATA_DIR.is_dir():
+        dirs = sorted(MONEY_CSV_DATA_DIR.glob("money_csv_*"), reverse=True)
+        if dirs:
+            m = re.search(r"money_csv_(\d{8})", dirs[0].name)
+            if m:
+                money_date = m.group(1)
+
+    return asset_date, money_date
+
+
+def _needs_prepare(task_name: str) -> bool:
+    """检查底层数据是否比 prompt 更新，需要则返回 True"""
+    prompt_date = _extract_prompt_date(task_name)
+    asset_date, money_date = _get_latest_data_dates()
+    return asset_date > prompt_date or money_date > prompt_date
 
 
 app = FastAPI(title="PSE Dashboard")
@@ -49,24 +108,59 @@ async def run_task(task_name: str):
     if task_name not in registry:
         raise HTTPException(404, f"未知任务: {task_name}")
     runner = TASKS_DIR / task_name / "run.py"
+    preparer = TASKS_DIR / task_name / "prepare.py"
     if not runner.exists():
         raise HTTPException(404, f"{task_name} 无 run.py")
 
     async def stream():
+        python = str(ROOT / ".venv/bin/python")
+
+        # 自动检测是否需要 prepare
+        if preparer.exists() and _needs_prepare(task_name):
+            prompt_date = _extract_prompt_date(task_name)
+            asset_date, money_date = _get_latest_data_dates()
+            yield f"data: 🔍 检测到新数据 (prompt: {prompt_date}  asset: {asset_date}  money: {money_date})，自动 prepare...\n\n"
+
+            prep_process = await asyncio.create_subprocess_exec(
+                python, "-u", str(preparer),
+                cwd=str(ROOT),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            while prep_process.stdout:
+                line = await prep_process.stdout.readline()
+                if not line:
+                    break
+                yield f"data: [prepare] {line.decode('utf-8', errors='replace').rstrip()}\n\n"
+            stderr_data = await prep_process.stderr.read()
+            if stderr_data:
+                for line in stderr_data.decode("utf-8", errors="replace").split("\n"):
+                    if line.strip():
+                        yield f"data: [stderr] {line.rstrip()}\n\n"
+            await prep_process.wait()
+            if prep_process.returncode != 0:
+                yield f"event: done\ndata: exit_code={prep_process.returncode}\n\n"
+                return
+            yield "data: ✅ prepare 完成\n\n"
+        else:
+            prompt_date = _extract_prompt_date(task_name)
+            asset_date, money_date = _get_latest_data_dates()
+            yield f"data: ✅ 数据已是最新 (prompt: {prompt_date}  asset: {asset_date}  money: {money_date})，跳过 prepare\n\n"
+
+        # 运行 run.py
         process = await asyncio.create_subprocess_exec(
-            str(ROOT / ".venv/bin/python"), "-u", str(runner),
+            python, "-u", str(runner),
             cwd=str(ROOT),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
-        # 逐行推送 stdout
         while process.stdout:
             line = await process.stdout.readline()
             if not line:
                 break
             yield f"data: {line.decode('utf-8', errors='replace').rstrip()}\n\n"
-        # stderr 也推
         stderr_data = await process.stderr.read()
         if stderr_data:
             for line in stderr_data.decode("utf-8", errors="replace").split("\n"):

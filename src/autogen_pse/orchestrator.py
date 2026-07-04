@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +18,6 @@ from .agents import (
     create_evaluator,
     create_planner,
     create_specialist,
-    create_tool_agent,
 )
 from .config import settings
 from .tools import AgentTokenStats, TokenReport, TokenTracker
@@ -25,7 +25,7 @@ from .tools import AgentTokenStats, TokenReport, TokenTracker
 # ── 循环控制参数 ──
 MAX_PARTIAL_RETRIES = int(os.getenv("PSE_MAX_PARTIAL_RETRIES", "3"))
 MAX_FAIL_RETRIES = int(os.getenv("PSE_MAX_FAIL_RETRIES", "2"))
-TURNS_PER_CYCLE = int(os.getenv("PSE_TURNS_PER_CYCLE", "20"))
+TURNS_PER_CYCLE = int(os.getenv("PSE_TURNS_PER_CYCLE", "9"))
 
 TRACE_DIR = settings.trace_dir
 
@@ -58,11 +58,10 @@ def create_pse_team(
     planner = create_planner(model_client, task)
     specialist = create_specialist(model_client, task)
     evaluator = create_evaluator(model_client, task)
-    tool_agent = create_tool_agent(model_client)
 
     text_term = TextMentionTermination("交付完成") | TextMentionTermination("BLOCKED")
     return RoundRobinGroupChat(
-        participants=[planner, specialist, evaluator, tool_agent],
+        participants=[planner, specialist, evaluator],
         termination_condition=text_term | ExternalTermination(),
         max_turns=TURNS_PER_CYCLE,
     )
@@ -75,29 +74,36 @@ class CycleResult:
         summary: str,
         report: TokenReport,
         messages: list | None = None,
+        reason: str = "",
     ):
         self.outcome = outcome
         self.summary = summary
         self.report = report
         self.messages = messages or []
+        self.reason = reason
 
 
-def _detect_outcome(messages: list) -> tuple[str, str]:
+_REASON_RE = re.compile(r"原因码\**\s*[：:]\s*(\w+)", re.IGNORECASE)
+
+
+def _detect_outcome(messages: list) -> tuple[str, str, str]:
+    """从消息列表中检测判决结果，返回 (outcome, reason_code, summary)"""
     last_text = ""
     for msg in reversed(messages):
         if isinstance(msg, TextMessage) and msg.source in ("Planner", "Evaluator"):
             content = msg.content
             if "交付完成" in content:
-                return "PASS", content[:2000]
+                return "PASS", "OK", content[:2000]
             if "BLOCKED" in content:
-                return "BLOCKED", content[:2000]
+                return "BLOCKED", "UNKNOWN", content[:2000]
             if msg.source == "Evaluator":
-                for kw in ["FAIL", "PARTIAL"]:
+                for kw in ["PASS", "FAIL", "PARTIAL"]:
                     if kw in content:
-                        return kw, content[:2000]
+                        m = _REASON_RE.search(content)
+                        return kw, (m.group(1).upper() if m else kw), content[:2000]
             if not last_text:
                 last_text = content[:2000]
-    return "TIMEOUT", last_text
+    return "TIMEOUT", "UNKNOWN", last_text
 
 
 def _make_trace(report: TokenReport) -> dict:
@@ -133,12 +139,12 @@ async def _run_one_cycle(
         if verbose:
             _print_message(msg)
 
-    outcome, summary = _detect_outcome(messages)
+    outcome, reason, summary = _detect_outcome(messages)
     chat_log = []
     for m in messages:
         if isinstance(m, TextMessage):
             chat_log.append({"source": m.source, "content": m.content})
-    return CycleResult(outcome, summary, tracker.report, chat_log)
+    return CycleResult(outcome, summary, tracker.report, chat_log, reason=reason)
 
 
 async def run_task(
@@ -174,6 +180,7 @@ async def run_task(
             "started": cycle_start,
             "ended": cycle_end,
             "outcome": result.outcome,
+            "reason": result.reason,
             "verdict_summary": result.summary[:2000],
             "token": _make_trace(result.report),
             "messages": result.messages,
@@ -190,13 +197,14 @@ async def run_task(
             if partial_count > MAX_PARTIAL_RETRIES:
                 current_task = (
                     f"连续 PARTIAL {partial_count} 次，已达上限。"
+                    f"最近原因: {result.reason}。"
                     f"请评估是否仍有可交付内容，或宣布 BLOCKED。\n\n"
                     f"原始任务: {task}\n\n"
                     f"最近判决: {result.summary}"
                 )
                 continue
             current_task = (
-                f"上一轮 Evaluator 判决 PARTIAL。"
+                f"上一轮 Evaluator 判决 PARTIAL (原因: {result.reason})。"
                 f"请修复以下问题后重新提交：\n\n{result.summary}"
             )
             continue
@@ -209,7 +217,7 @@ async def run_task(
                     print(f"\n❌ 连续 FAIL {MAX_FAIL_RETRIES}+ 次，强制 BLOCKED")
                 break
             current_task = (
-                f"上一轮被判 FAIL。请基于原始任务重新制定计划。"
+                f"上一轮被判 FAIL (原因: {result.reason})。请基于原始任务重新制定计划。"
                 f"（剩余重试次数: {fail_rem}）\n\n"
                 f"原始任务: {task}\n\n"
                 f"失败原因: {result.summary}"
