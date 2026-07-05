@@ -39,13 +39,15 @@ def create_specialist(
     model_client: OpenAIChatCompletionClient, task: str | None = None
 ) -> AssistantAgent:
     """创建 Specialist Agent。"""
+    # 文章写作任务不需要工具（Planner 已读源码、出提纲）
+    tools = [] if task == "project-articles" else [read_file]
     return AssistantAgent(
         name="Specialist",
         model_client=model_client,
         system_message=load_prompt("specialist", task),
         description="实施者",
         model_client_stream=settings.PSE_MODEL_STREAM,
-        tools=[read_file],
+        tools=tools,
         reflect_on_tool_use=False,
     )
 

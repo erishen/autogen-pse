@@ -1,4 +1,4 @@
-"""RoundRobinGroupChat 编排层 — 含循环控制、step_buffer、执行 Trace 和 Token 统计。"""
+"""RoundRobinGroupChat 编排层 — 含循环控制、执行 Trace 和 Token 统计。"""
 
 import json
 import os
@@ -26,6 +26,7 @@ from .tools import AgentTokenStats, TokenReport, TokenTracker
 MAX_PARTIAL_RETRIES = int(os.getenv("PSE_MAX_PARTIAL_RETRIES", "3"))
 MAX_FAIL_RETRIES = int(os.getenv("PSE_MAX_FAIL_RETRIES", "2"))
 TURNS_PER_CYCLE = int(os.getenv("PSE_TURNS_PER_CYCLE", "9"))
+PSE_TIMEOUT = int(os.getenv("PSE_TIMEOUT", "180"))
 
 TRACE_DIR = settings.trace_dir
 
@@ -45,7 +46,7 @@ def _create_model_client() -> OpenAIChatCompletionClient:
             "json_output": True,
             "family": "unknown",
         }
-    return OpenAIChatCompletionClient(**kwargs, timeout=180)  # Agnes 非流式需要更长时间
+    return OpenAIChatCompletionClient(**kwargs, timeout=PSE_TIMEOUT)
 
 
 def create_pse_team(

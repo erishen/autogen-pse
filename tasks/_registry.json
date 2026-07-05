@@ -7,6 +7,10 @@
     "portfolio-review": {
       "label": "投资周报",
       "description": "生成结构化摘要，PSE 按需深度分析"
+    },
+    "project-articles": {
+      "label": "项目文章写作",
+      "description": "为项目撰写技术文章并发布到 WordPress"
     }
   }
 }
