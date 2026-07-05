@@ -157,10 +157,10 @@ def build_allocation(data: dict) -> str:
 def build_role_breakdown(data: dict) -> str:
     """按资产角色分层计算占比，供 Specialist 引用（避免用风险分布替代）。"""
     items = data.get("type_distribution", {})
-    growth_types = {"基金", "美元基金", "美元基金（美元）", "美股", "定投基金", "ETF", "个股"}
-    defense_types = {"债券", "特别国债", "公募固收", "高端理财"}
-    liquid_types = {"理财", "货币", "券商理财"}
-    gold_types = {"黄金"}
+    growth_types = set(os.getenv("GROWTH_TYPES", "基金,美元基金,美元基金（美元）,美股,定投基金,ETF,个股").split(","))
+    defense_types = set(os.getenv("DEFENSE_TYPES", "债券,特别国债,公募固收,高端理财").split(","))
+    liquid_types = set(os.getenv("LIQUID_TYPES", "理财,货币,券商理财").split(","))
+    gold_types = set(os.getenv("GOLD_TYPES", "黄金").split(","))
 
     growth_pct, growth_amt = 0.0, 0.0
     defense_pct, defense_amt = 0.0, 0.0
@@ -302,7 +302,7 @@ CUR_LOSS_THRESHOLD = _env_float("PSE_CUR_LOSS_THRESHOLD")
 CUR_LOSS_MIN_AMOUNT = _env_int("PSE_CUR_LOSS_MIN_AMOUNT")
 
 # 固收类产品类型，报告中只聚合不逐只列出
-FIXED_INCOME_TYPES = {"理财", "债券", "高端理财", "货币", "券商理财", "短债"}
+FIXED_INCOME_TYPES = set(os.getenv("FIXED_INCOME_TYPES", "理财,债券,高端理财,货币,券商理财,短债").split(","))
 
 
 def detect_issues(products: list) -> str:

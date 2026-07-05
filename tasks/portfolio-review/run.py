@@ -6,6 +6,11 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
+
 BASE = Path(__file__).parent
 sys.path.insert(0, str(BASE.parent.parent / "src"))
 from autogen_pse import (  # noqa: E402
@@ -108,14 +113,34 @@ def extract_review_from_trace(task: str) -> str | None:
     return f"# 投资组合诊断 — 最终结论\n\n{last[cutoff:].strip()}"
 
 
-_DEFENSE_KEYWORDS = {}
+def _load_sanitize_rules() -> dict:
+    """从 sanitize_rules.toml 加载后处理规则，文件不存在时返回空配置。"""
+    rules_path = BASE / "sanitize_rules.toml"
+    if rules_path.exists():
+        return tomllib.loads(rules_path.read_text(encoding="utf-8"))
+    return {}
+
+
+_SANITIZE_RULES = _load_sanitize_rules()
 
 
 def sanitize_review(text: str) -> str:
     """后处理：强制修正 LLM 输出的明显违规。
-    - 防御底仓（红利/黄金）卖出建议 → 改为持有观察（除非亏损超过 -30%）
-    - 小额持仓（< ¥1万）的买卖建议 → 移除
+    规则从 sanitize_rules.toml 加载，支持：
+    - 防御底仓卖出建议 → 改为持有观察（除非触发止损线）
+    - 小额持仓的买卖建议 → 移除
     """
+    if not _SANITIZE_RULES:
+        return text
+
+    defense_cfg = _SANITIZE_RULES.get("defense", {})
+    small_cfg = _SANITIZE_RULES.get("small_position", {})
+
+    defense_keywords = set(defense_cfg.get("keywords", []))
+    stop_loss_pct = defense_cfg.get("stop_loss_pct", 30)
+    threshold_wan = small_cfg.get("threshold_wan", 1.0)
+    fixed_income_keywords = set(small_cfg.get("fixed_income_keywords", []))
+
     lines = text.split("\n")
     result = []
     for line in lines:
@@ -132,22 +157,23 @@ def sanitize_review(text: str) -> str:
             continue
         amt_wan = float(amt_match.group(1))
 
-        # 小额持仓过滤：仅对固收/理财类（非增长引擎）移除
-        is_fixed = any(kw in stripped for kw in {"理财", "债券", "货币", "固收", "短债"})
-        if amt_wan < 1.0 and is_fixed:
-            continue
+        # 小额持仓过滤
+        if fixed_income_keywords:
+            is_fixed = any(kw in stripped for kw in fixed_income_keywords)
+            if amt_wan < threshold_wan and is_fixed:
+                continue
 
-        # 防御底仓（红利/黄金）卖出检查 — 只看产品部分，不看「→」后的去向
-        product_part = stripped.split("→")[0].split("|")[0]
-        is_defense = any(kw in product_part for kw in _DEFENSE_KEYWORDS)
-        is_sell = any(kw in product_part for kw in ["卖出", "清仓"])
-        if is_defense and is_sell:
-            # 提取亏损幅度
-            loss_match = re.search(r"[-−](\d+\.?\d*)%", stripped)
-            loss = abs(float(loss_match.group(1))) if loss_match else 0
-            if loss < 30:  # 未触发 -30% 止损 → 改为持有观察
-                line = re.sub(r"\[([^\]]+)\]\s*(卖出|清仓)", r"[\1] 持有观察（自动修正：未触发止损）", line)
-                line = line.replace("赎回后资金并入", "持有观察")
+        # 防御底仓卖出检查 — 只看产品部分，不看「→」后的去向
+        if defense_keywords:
+            product_part = stripped.split("→")[0].split("|")[0]
+            is_defense = any(kw in product_part for kw in defense_keywords)
+            is_sell = any(kw in product_part for kw in ["卖出", "清仓"])
+            if is_defense and is_sell:
+                loss_match = re.search(r"[-−](\d+\.?\d*)%", stripped)
+                loss = abs(float(loss_match.group(1))) if loss_match else 0
+                if loss < stop_loss_pct:
+                    line = re.sub(r"\[([^\]]+)\]\s*(卖出|清仓)", r"[\1] 持有观察（自动修正：未触发止损）", line)
+                    line = line.replace("赎回后资金并入", "持有观察")
         result.append(line)
     return "\n".join(result)
 

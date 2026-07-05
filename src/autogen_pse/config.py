@@ -15,8 +15,8 @@ class Settings(BaseSettings):
 
     # LLM
     OPENAI_API_KEY: str = ""
-    OPENAI_BASE_URL: str = "https://api.example.com/v1"
-    OPENAI_MODEL: str = "your-model-name"
+    OPENAI_BASE_URL: str = ""
+    OPENAI_MODEL: str = ""
 
     # Model streaming (disable for providers with unstable streaming like Agnes free tier)
     PSE_MODEL_STREAM: bool = True

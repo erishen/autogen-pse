@@ -3,6 +3,7 @@
 
 # 交易规则（私密，含个人投资策略参数）
 *_rules.md
+sanitize_rules.toml
 
 # Python
 .venv/

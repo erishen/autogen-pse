@@ -34,19 +34,19 @@ _ENV_MOCK = {
     "PSE_LARGE_POS_MAX_RETURN": "2.5",
     "PSE_CUR_LOSS_THRESHOLD": "-5",
     "PSE_CUR_LOSS_MIN_AMOUNT": "3000",
-    "MARKET_INDICES": "上证指数,沪深300",
-    "PROP_CORE_VALUE": "住宅估值",
-    "PROP_CORE_ESTIMATE": "住宅估价",
-    "PROP_CORE_DIFF": "住宅差价",
+    "MARKET_INDICES": "index1,index2",
+    "PROP_CORE_VALUE": "core_value_col",
+    "PROP_CORE_ESTIMATE": "core_estimate_col",
+    "PROP_CORE_DIFF": "core_diff_col",
     "PROP_CORE_UNITS": "",
     "PROP_CORE_PRICE": "",
     "PROP_CORE_LISTING": "",
-    "PROP_DISTRICTS": "区域A,区域B",
-    "PROP_OLD_VALUE": "旧资产1,旧资产2",
-    "GOLD_GLD_COL": "黄金GLD",
-    "GOLD_DOMESTIC_COL": "黄金",
-    "GOLD_EXCHANGE_COL": "兑换黄金",
-    "MARKET_EXTRA": "恐慌VXX,美联基利率",
+    "PROP_DISTRICTS": "district1,district2",
+    "PROP_OLD_VALUE": "old1,old2",
+    "GOLD_GLD_COL": "gold_gld",
+    "GOLD_DOMESTIC_COL": "gold_domestic",
+    "GOLD_EXCHANGE_COL": "gold_exchange",
+    "MARKET_EXTRA": "metric1,metric2",
 }
 
 
@@ -147,7 +147,7 @@ def test_detect_issues(products, expected_section, expected_count):
 def test_build_dca_review():
     products = [
         {
-            "名称": "沪深300定投",
+            "名称": "宽基指数定投A",
             "类型": "定投基金",
             "当前金额": "50000",
             "实际收益率(%)": "-3.0",
@@ -155,7 +155,7 @@ def test_build_dca_review():
             "年化收益率(%)": "-5.5",
         },
         {
-            "名称": "纳指定投",
+            "名称": "海外指数定投B",
             "类型": "定投基金",
             "当前金额": "30000",
             "实际收益率(%)": "8.0",
@@ -171,10 +171,10 @@ def test_build_dca_review():
 
 def test_build_c_class_alert():
     products = [
-        {"名称": "沪深300增强C", "投资天数": "200", "当前金额": "50000"},
-        {"名称": "沪深300增强A", "投资天数": "200", "当前金额": "50000"},
+        {"名称": "指数增强C", "投资天数": "200", "当前金额": "50000"},
+        {"名称": "指数增强A", "投资天数": "200", "当前金额": "50000"},
         {"名称": "短持C基", "投资天数": "100", "当前金额": "50000"},
-        {"名称": "红利Y份额", "投资天数": "300", "当前金额": "3000"},
+        {"名称": "分红Y份额", "投资天数": "300", "当前金额": "3000"},
     ]
     result = prepare.build_c_class_alert(products)
     # C 类长持应触发，A 类和短持 C 不应触发
