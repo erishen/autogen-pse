@@ -20,10 +20,7 @@ CLI (cli.py)
                              │
                              ├─ Planner      ← 分析需求、分解任务、交付决策
                              ├─ Specialist   ← 生成分析报告
-                             ├─ Evaluator    ← 独立验证数据准确性
-                             └─ ToolAgent    ← 执行工具调用、保存产物
-                                  │
-                                  └─ tools.py → RAG 知识库检索 (.env 可选)
+                             └─ Evaluator    ← 独立验证数据准确性
 ```
 
 ---
@@ -83,19 +80,10 @@ tasks/<task-name>/
 | 属性 | 值 |
 |------|-----|
 | 角色 | 独立投资评审官 |
-| 注册工具 | `read_file`, `run_pytest`, `run_ruff` |
+| 注册工具 | `read_file`, `bash`, `run_pytest`, `run_ruff` |
 | 职责 | 独立验证 Specialist 报告，读取原始数据核验数字 |
 | 判决 | PASS / PARTIAL / FAIL（不给修复建议） |
 | 验证维度 | 数据溯源、逻辑审查、风险检查、空话检测 |
-
-#### ToolAgent（工具执行者）
-
-| 属性 | 值 |
-|------|-----|
-| 角色 | 工具执行者（不做分析、不写报告） |
-| 注册工具 | `write_file`, `bash`, `read_file`, `run_pytest`, `run_ruff` |
-| 职责 | 执行 DSML 工具调用（Planner/Specialist/Evaluator 发出的 `<tool_calls>` 标签） |
-| 自动保存 | Evaluator PASS 判决后，保存 Specialist 最终输出到 `output/weekly_review_YYYYMMDD.md` |
 
 ### 3. 循环控制流程
 
@@ -104,8 +92,7 @@ tasks/<task-name>/
   │
   ├─ Planner → 分析任务、读取数据、制定计划
   ├─ Specialist → 执行分析、输出报告
-  ├─ Evaluator → 验证报告、给出判决
-  └─ ToolAgent → 执行工具调用、保存产物
+  └─ Evaluator → 验证报告、给出判决
        │
        └─ 判决判定
             ├─ PASS     → 交付完成，退出循环
@@ -119,7 +106,7 @@ tasks/<task-name>/
 - `MAX_PARTIAL_RETRIES = 3` — PARTIAL 最大重试次数
 - `MAX_FAIL_RETRIES = 2` — FAIL 最大重试次数
 
-**Speaker 顺序：** `[Planner, Specialist, Evaluator, ToolAgent]`（RoundRobinGroupChat）
+**Speaker 顺序：** `[Planner, Specialist, Evaluator]`（RoundRobinGroupChat）
 
 ### 4. PSE 编排层 (orchestrator.py)
 
@@ -148,31 +135,15 @@ def load_prompt(name: str, task: str | None = None) -> str:
 
 | 工具 | 说明 | 绑定 Agent |
 |------|------|-----------|
-| `read_file(path)` | 读取文件内容 | Planner, Specialist, Evaluator, ToolAgent |
-| `bash(command)` | 执行 shell 命令 | Planner, ToolAgent |
-| `write_file(path, content)` | 写入文件 | ToolAgent |
-| `run_pytest(test_path)` | 运行测试 | Evaluator, ToolAgent |
-| `run_ruff(path)` | 代码风格检查 | Evaluator, ToolAgent |
+| `read_file(path)` | 读取文件内容 | Planner, Specialist, Evaluator |
+| `bash(command)` | 执行 shell 命令 | Planner, Evaluator |
+| `run_pytest(test_path)` | 运行测试 | Evaluator |
+| `run_ruff(path)` | 代码风格检查 | Evaluator |
 
 工具注册策略：**最小权限原则**
 - Planner：数据分析权限（read_file + bash）
-- Specialist：只读权限（read_file）— 移除写文件和 bash 防止编辑循环
-- Evaluator：只读 + 验证权限（read_file + pytest + ruff）
-- ToolAgent：全部权限，但仅通过 DSML 标签被动调用
-
-#### DSML 工具调用
-
-DSML (Domain-Specific Markup Language) 是一种基于 XML 标签的工具调用协议，用于 Agent 之间的工具调用委托：
-
-```xml
-<tool_calls>
-<invoke name="bash">
-<parameter name="command" string="true">python3 script.py</parameter>
-</invoke>
-</tool_calls>
-```
-
-Planner/Specialist/Evaluator 通过 DSML 标签委托 ToolAgent 执行操作，ToolAgent 解析标签并调用对应工具函数。
+- Specialist：只读权限（read_file），不挂载 bash/写工具，避免自行改文件陷入循环
+- Evaluator：只读 + 验证权限（read_file + bash + pytest + ruff）
 
 #### Token 统计
 
@@ -305,13 +276,13 @@ Agent 首次发言时通过两条命令获取最新市场数据：
 
 | 决策 | 方案 | 理由 |
 |------|------|------|
-| Agent 工具权限 | Planner: read+bash; Specialist: read 仅; Evaluator: read+pytest+ruff; ToolAgent: 全部 | 防止 Agent 编辑文件陷入循环 |
-| 实时行情获取归属 | Planner（第 1 个发言） | ToolAgent 是第 4 个发言，到它时 Evaluator 已可能 PASS |
-| 报告保存方式 | `run.py` 从 trace 提取最终结论 | 比 ToolAgent 主动 write_file 更可靠（避免时序问题） |
+| Agent 工具权限 | Planner: read+bash; Specialist: read; Evaluator: read+bash+pytest+ruff | 防止 Agent 编辑文件陷入循环 |
+| 实时行情获取归属 | Planner（第 1 个发言） | 确保先拿到实时数据再交给 Specialist 分析 |
+| 报告保存方式 | `run.py` 从 trace 提取最终结论 | 单一写入点，避免多 Agent 竞态写文件 |
 | 周报内容策略 | 仅保存 `## 🎯 最终结论` 章节 | 消除完整报告正文和 Agent 对话历史的冗余 |
 | RAG 分类过滤 | INVEST_CATS 白名单 | "05-FinTech"/"fintech" 含 KYC/PayPal 业务笔记，与投资分析无关 |
 | LLM 模型 | DeepSeek Chat（兼容 OpenAI SDK） | 性价比高（¥2/8 per 1M tokens），支持 function calling |
-| 发言顺序 | Planner→Specialist→Evaluator→ToolAgent | 计划先行、执行随后、验证收尾、工具最后 |
+| 发言顺序 | Planner→Specialist→Evaluator | 计划先行、执行随后、验证收尾 |
 
 ---
 
