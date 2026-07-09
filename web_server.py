@@ -8,33 +8,27 @@ import asyncio
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+from autogen_pse.config import settings  # noqa: E402
+
 TASKS_DIR = ROOT / "tasks"
 TRACE_DIR = ROOT / "outputs" / "traces"
 WEB_DIST = ROOT / "web" / "dist"
 
-# 从 .env 读取外部数据目录，解析为绝对路径
-def _read_env(key: str, default: str = "") -> str:
-    """简单解析 .env 文件中的 key=value 行"""
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return default
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith(f"{key}="):
-            return line.split("=", 1)[1].strip()
-    return default
-
-
-_ASSET_LENS_DIR = _read_env("ASSET_LENS_DIR")
-_MONEY_CSV_DIR = _read_env("MONEY_CSV_DIR")
+# 外部数据目录从 .env 经 settings 读取（与 config.py 统一，不再重复解析 .env）
+_ASSET_LENS_DIR = settings.ASSET_LENS_DIR
+_MONEY_CSV_DIR = settings.MONEY_CSV_DIR
 
 ASSET_LENS_OUTPUT = (ROOT / _ASSET_LENS_DIR / "output").resolve() if _ASSET_LENS_DIR else None
 MONEY_CSV_DATA_DIR = (ROOT / _MONEY_CSV_DIR).resolve() if _MONEY_CSV_DIR else None
@@ -88,10 +82,35 @@ app = FastAPI(title="PSE Dashboard")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# ── 鉴权中间件 ──
+# 仅当设置了 WEB_AUTH_TOKEN 时，对所有 /api/* 接口要求 `Authorization: Bearer <token>`。
+# 未设置 token 时接口开放，但 Makefile 默认仅绑定 127.0.0.1（本机访问）。
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        token = settings.WEB_AUTH_TOKEN
+        if token and request.headers.get("authorization", "") != f"Bearer {token}":
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "未授权：请在请求头携带 Authorization: Bearer <WEB_AUTH_TOKEN>"},
+            )
+    return await call_next(request)
+
+
+@app.on_event("startup")
+async def _startup_check():
+    if not settings.WEB_AUTH_TOKEN:
+        print(
+            "\n⚠️  [安全提示] WEB_AUTH_TOKEN 未设置，Web 接口无鉴权。"
+            "请仅通过 127.0.0.1 本机访问；如需对外暴露，先在 .env 设置 WEB_AUTH_TOKEN，"
+            "再用 make serve WEB_BIND_HOST=0.0.0.0 启动。\n"
+        )
 
 
 # ── API ──

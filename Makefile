@@ -4,6 +4,9 @@ VENV_PY := .venv/bin/python
 PY := $(shell command -v $(VENV_PY) 2>/dev/null || echo "python3")
 CLI := $(PY) cli.py
 
+# Web 服务绑定地址：默认仅本机；对外暴露须 WEB_BIND_HOST=0.0.0.0 且先设 WEB_AUTH_TOKEN
+WEB_BIND_HOST ?= 127.0.0.1
+
 help: ## 显示帮助
 	@echo "autogen-pse 可用命令:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-18s %s\n", $$1, $$2}'
@@ -79,11 +82,18 @@ review-agnes: _auto-summarize ## 用 Agnes 2.0 Flash 跑周报（非流式，免
 	PSE_MAX_PARTIAL_RETRIES=5 \
 	$(PY) tasks/portfolio-review/run.py
 
-serve: web-build ## 启动 Web Dashboard（http://localhost:8080）
-	$(PY) -m uvicorn web_server:app --host 0.0.0.0 --port 8080
+# 绑定守卫：仅在对外暴露（0.0.0.0）且未设 WEB_AUTH_TOKEN 时拒绝启动
+guard-bind:
+	@if [ "$(WEB_BIND_HOST)" = "0.0.0.0" ] && ! grep -q '^WEB_AUTH_TOKEN=' .env 2>/dev/null; then \
+		echo "❌ 拒绝绑定 0.0.0.0：未设置 WEB_AUTH_TOKEN。本机访问用 make serve，或先设 WEB_AUTH_TOKEN 再 make serve WEB_BIND_HOST=0.0.0.0"; exit 1; \
+	fi
 
-dev: kill ## 开发模式：先杀旧进程，再启动 FastAPI + Vite
-	$(PY) -m uvicorn web_server:app --host 0.0.0.0 --port 8080 &
+serve: guard-bind serve-web ## 启动 Web Dashboard（默认仅本机 127.0.0.1）
+serve-web: web-build
+	$(PY) -m uvicorn web_server:app --host $(WEB_BIND_HOST) --port 8080
+
+dev: guard-bind kill ## 开发模式：先杀旧进程，再启动 FastAPI + Vite
+	$(PY) -m uvicorn web_server:app --host $(WEB_BIND_HOST) --port 8080 &
 	@sleep 2
 	cd web && npm run dev
 

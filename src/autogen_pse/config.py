@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Web dashboard CORS
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # Web dashboard auth token (empty = no auth; bind to 127.0.0.1 only)
+    WEB_AUTH_TOKEN: str = ""
+
     @property
     def trace_dir(self) -> Path:
         return ROOT / self.PSE_TRACE_DIR
