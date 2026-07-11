@@ -1,11 +1,16 @@
+<div align="right">
+  <a href="README.zh.md">🇨🇳 中文</a>
+</div>
+
 # autogen-pse
 
 A **task-agnostic Planner–Specialist–Evaluator (PSE) agent framework** built on Microsoft AutoGen. Three agents with clear, separated responsibilities and an independent verification gate form a closed-loop delivery pipeline. You bring the task; the engine stays the same.
 
-> **This is one of three PSE frameworks in this workspace family — same philosophy, different orchestration backend:**
+> **This is one of four PSE frameworks in this workspace family — same philosophy, different orchestration backend:**
 > - **autogen-pse** (this repo) — PSE on AutoGen `RoundRobinGroupChat`, with optional RAG and a web dashboard.
-> - **crewai-pse** — PSE on CrewAI `Sequential` (used for project-code → blog publishing to erishen.cn).
-> - **langgraph-pse** — PSE on a LangGraph state machine (used for CRM data-quality QA).
+> - **crewai-pse** — PSE on CrewAI `Sequential` (used for project-code → bilingual article → publishing to erishen.cn).
+> - **langgraph-pse** — PSE on a LangGraph state machine (used for CRM data-quality QA + weekly relationship review).
+> - **llamaindex-pse** — PSE on a LlamaIndex Workflow with built-in RAG (used for résumé tailoring).
 
 ## Quick Start
 
@@ -22,7 +27,7 @@ The engine knows nothing about investments, code, or CRM — it only runs the PS
 | Task | Role | What it does |
 |------|------|--------------|
 | `demo` | Minimal example | Planner → Specialist writes quicksort code → Evaluator runs pytest + ruff. Proves the pipeline end-to-end. |
-| `portfolio-review` | **Reference task** | The author's primary use case: reads `asset-lens` JSON/CSV, a rule-engine `prepare.py` builds a structured summary (zero LLM cost), then the PSE trio writes a weekly investment review with independent data verification. |
+| `portfolio-review` | **Reference task** | The author's primary use case: reads `asset-lens` JSON/CSV, a rule-engine `prepare.py` builds a structured summary (zero LLM cost), then the PSE trio writes **next-week investment advice** (formerly called the "weekly review") with independent data verification. |
 
 Add your own under `tasks/<your-task>/` (see *Adding a New Task*). Once registered in `tasks/_registry.json`, `python cli.py list` discovers it automatically.
 
@@ -70,8 +75,8 @@ python cli.py trace -n 5        # show the last 5 execution traces
 ```bash
 make demo            # run the demo task
 make summarize       # portfolio-review: build the structured summary (zero LLM cost)
-make review          # portfolio-review: full PSE weekly review (DeepSeek)
-make review-agnes    # portfolio-review: full PSE weekly review (Agnes 2.0 Flash)
+make review          # portfolio-review: full PSE next-week investment advice (DeepSeek)
+make review-agnes    # portfolio-review: full PSE next-week investment advice (Agnes 2.0 Flash)
 make market          # portfolio-review: latest market indices
 make serve           # start the web dashboard (http://localhost:8080)
 make test            # run unit tests
@@ -82,7 +87,7 @@ make lint            # ruff check + format
 
 **`make summarize`** is the daily tool: it reads `asset-lens` JSON output, builds a structured summary, and a rule engine auto-detects 4 classes of portfolio issues (long-term loss, low capital efficiency, high volatility, structural problems). Zero LLM cost.
 
-**`make review`** is the deep pass: the PSE trio writes the investment report on top of the summary with independent data verification. Run it when you want a second opinion.
+**`make review`** is the deep pass: the PSE trio writes **next-week investment advice** on top of the summary with independent data verification. Run it when you want a second opinion.
 
 **`make serve`** launches the web dashboard at `http://localhost:8080` — asset trend charts, one-click task execution, execution history.
 
@@ -161,3 +166,20 @@ Steps:
 4. **Register in `tasks/_registry.json`** — add `"my-task": { "label": "...", "description": "...", "env_required": [...] }`. `python cli.py list` will pick it up immediately.
 
 No engine changes required.
+
+## Relation to Sibling Frameworks
+
+All four share the **PSE role model** and a **verify→fix loop**, but differ in orchestration:
+
+| | `autogen-pse` | `crewai-pse` | `langgraph-pse` | `llamaindex-pse` |
+|---|---|---|---|---|
+| Orchestration | **AutoGen `RoundRobinGroupChat`** | CrewAI `Sequential` | LangGraph `StateGraph` + conditional edges | LlamaIndex `Workflow` + `@step` + Event |
+| Verify step | independent Evaluator (PASS/PARTIAL/FAIL) + grep/pytest/ruff | regex/grep in `run.py` | injected `verify_fn` in the graph | injected `verify_fn` in the workflow |
+| RAG | optional | — | — | **built-in** (`retriever`, source-grounded) |
+| Extras | **web dashboard (FastAPI + React) + CLI task platform** | 3-step write/publish/archive | two shipped CRM tasks | RAG index cache |
+| Reference use | **asset-lens → next-week investment advice** | project code → bilingual article → WordPress | CRM data-quality QA + weekly relationship review | résumé tailoring (RAG) |
+| Best for | cheap, frequent drafts | richer multi-agent publishing | workflows needing explicit state control | RAG-grounded generation |
+
+## License
+
+MIT

@@ -1,11 +1,16 @@
+<div align="right">
+  <a href="README.md">🌐 English</a>
+</div>
+
 # autogen-pse
 
 基于 Microsoft AutoGen 的 **task-agnostic（任务无关）Planner–Specialist–Evaluator（PSE）三角色 Agent 框架**。三个角色各司其职、独立验证，形成闭环交付流水线。框架只负责跑 PSE 循环，任务由你注册进来。
 
-> **这是本工作区 PSE 框架家族三个成员之一 —— 同一套理念，不同的编排后端：**
+> **这是本工作区 PSE 框架家族四个成员之一 —— 同一套理念，不同的编排后端：**
 > - **autogen-pse**（本仓库）—— 基于 AutoGen `RoundRobinGroupChat` 的 PSE，带可选 RAG 与 Web Dashboard。
-> - **crewai-pse** —— 基于 CrewAI `Sequential` 的 PSE（用于项目代码 → 发布 erishen.cn 博客）。
-> - **langgraph-pse** —— 基于 LangGraph 状态机的 PSE（用于 CRM 数据质量 QA）。
+> - **crewai-pse** —— 基于 CrewAI `Sequential` 的 PSE（用于项目代码 → 中英文章 → 发布 erishen.cn）。
+> - **langgraph-pse** —— 基于 LangGraph 状态机的 PSE（用于 CRM 数据质量 QA + 每周关系复盘）。
+> - **llamaindex-pse** —— 基于 LlamaIndex Workflow、内置 RAG 的 PSE（用于简历定制）。
 
 ## 快速开始
 
@@ -22,7 +27,7 @@ make demo                      # 运行最小快排任务（验证流水线）
 | 任务 | 定位 | 用途 |
 |------|------|------|
 | `demo` | 最小示例 | Planner → Specialist 写快排代码 → Evaluator 跑 pytest + ruff，端到端验证流水线。 |
-| `portfolio-review` | **参考任务** | 作者主力场景：读 `asset-lens` 的 JSON/CSV，由规则引擎 `prepare.py` 产出结构化摘要（零 LLM 成本），再由 PSE 三角色撰写投资周报并联立核验数据。 |
+| `portfolio-review` | **参考任务** | 作者主力场景：读 `asset-lens` 的 JSON/CSV，由规则引擎 `prepare.py` 产出结构化摘要（零 LLM 成本），再由 PSE 三角色撰写**下周投资建议**（原称「投资周报」）并联立核验数据。 |
 
 更多任务放到 `tasks/<your-task>/` 即可（见「扩展新任务」）。在 `tasks/_registry.json` 注册后，`python cli.py list` 会自动发现。
 
@@ -70,8 +75,8 @@ python cli.py trace -n 5        # 查看最近 5 次执行 trace
 ```bash
 make demo            # 运行 demo 任务
 make summarize       # portfolio-review：生成结构化摘要（零 LLM 成本）
-make review          # portfolio-review：完整 PSE 周报（DeepSeek）
-make review-agnes    # portfolio-review：完整 PSE 周报（Agnes 2.0 Flash）
+make review          # portfolio-review：完整 PSE 下周投资建议（DeepSeek）
+make review-agnes    # portfolio-review：完整 PSE 下周投资建议（Agnes 2.0 Flash）
 make market          # portfolio-review：最新市场指数
 make serve           # 启动 Web Dashboard（http://localhost:8080）
 make test            # 运行单元测试
@@ -82,7 +87,7 @@ make lint            # ruff 检查 + 格式化
 
 **`make summarize`** 是日常工具：读 `asset-lens` 的 JSON 输出，生成结构化摘要，并用规则引擎自动检测 4 类持仓问题（长期亏损、资金效率低、高波动、结构问题）。零 LLM 成本。
 
-**`make review`** 是深度分析：PSE 三角色在摘要基础上撰写投资报告、独立验证数据准确性。只在想听第二种意见时跑。
+**`make review`** 是深度分析：PSE 三角色在摘要基础上撰写**下周投资建议**、独立验证数据准确性。只在想听第二种意见时跑。
 
 **`make serve`** 启动 Web Dashboard：`http://localhost:8080` — 资产趋势图、一键触发任务、执行历史。
 
@@ -161,3 +166,20 @@ tasks/my-task/
 4. **在 `tasks/_registry.json` 注册** —— 加入 `"my-task": { "label": "...", "description": "...", "env_required": [...] }`。`python cli.py list` 立即可见。
 
 无需改动引擎。
+
+## 与兄弟框架的关系
+
+四者共享 **PSE 角色模型**与**验证→修正循环**，区别在编排：
+
+| | `autogen-pse` | `crewai-pse` | `langgraph-pse` | `llamaindex-pse` |
+|---|---|---|---|---|
+| 编排 | **AutoGen `RoundRobinGroupChat`** | CrewAI `Sequential` | LangGraph `StateGraph` + 条件边 | LlamaIndex `Workflow` + `@step` + Event |
+| 核查步骤 | 独立 Evaluator（PASS/PARTIAL/FAIL）+ grep/pytest/ruff | `run.py` 里正则/grep | 图中注入 `verify_fn` | 工作流中注入 `verify_fn` |
+| RAG | 可选 | — | — | **内置**（`retriever`，源头接地） |
+| 额外能力 | **Web Dashboard（FastAPI + React）+ CLI 任务平台** | 写/发/归档三步 | 内置两个 CRM 任务 | RAG 索引缓存 |
+| 实际用途 | **asset-lens → 下周投资建议** | 项目代码 → 中英文章 → WordPress | CRM 数据质量 QA + 每周关系复盘 | 简历定制（RAG） |
+| 最适合 | 便宜、高频草稿 | 更丰富的多 Agent 发布 | 需要显式状态控制的工作流 | RAG 接地生成 |
+
+## 许可证
+
+MIT
