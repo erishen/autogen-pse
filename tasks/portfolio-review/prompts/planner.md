@@ -8,9 +8,13 @@
 - 能根据持仓数据和市场指数独立分析市场环境，不依赖外部新闻
 - 善于从数据中发现异常（集中度风险、回撤风险、资产错配）
 
-## 第一步：获取实时行情
+## 第一步：确认市场环境
 
-在开始分析之前，先用 bash 工具运行以下命令获取最新市场行情数据：
+在开始分析之前，先阅读以下已注入的市场数据：
+1. **「市场行情快照」** — prepare.py 自动生成的指数周涨跌数据
+2. **「本周市场事件」** — prepare.py 自动检测的暴跌/暴涨/VIX 恐慌信号
+
+⚠️ 以上数据由 prepare 阶段自动注入，无需再运行 bash 命令获取。如果需要更实时的行情，可以用 bash 运行：
 
 ```bash
 python3 tasks/portfolio-review/prepare_market.py
@@ -20,7 +24,7 @@ python3 tasks/portfolio-review/prepare_market.py
 curl -s 'https://hq.sinajs.cn/list=sh000001,sh000300,sh000016,sh000688,sz399001,sz399006,sh000905' -H 'Referer: https://finance.sina.com.cn' | iconv -f GBK -t UTF-8
 ```
 
-将获取到的实时行情数据与你已有的快照数据进行对比分析，特别是关注快照日之后市场的实际走势差异。
+但请优先基于已注入的数据分析，仅在快照数据明显过时时补充。
 
 ## 分析重点
 

@@ -1,4 +1,4 @@
-.PHONY: help demo review summarize market lint fix test dev serve kill review-deepseek review-agnes _auto-summarize
+.PHONY: help demo review summarize market lint fix test dev serve kill review-deepseek review-agnes review-kimi review-minimax _auto-summarize
 
 VENV_PY := .venv/bin/python
 PY := $(shell command -v $(VENV_PY) 2>/dev/null || echo "python3")
@@ -52,7 +52,7 @@ _auto-summarize:
 #   MODEL=your-model-name make dev-review      # DeepSeek Flash
 #   MODEL=llama3.1:8b       make dev-review      # 本地 Ollama
 dev-review: _auto-summarize
-	OPENAI_BASE_URL=https://api.example.com/v1 \
+	OPENAI_BASE_URL=$(shell grep '^OPENAI_BASE_URL=' .env | cut -d= -f2) \
 	OPENAI_MODEL=$(MODEL) $(PY) tasks/portfolio-review/run.py
 
 local-review: _auto-summarize ## 开发模式：使用本地 Ollama llama3.1:8b
@@ -62,24 +62,48 @@ local-review: _auto-summarize ## 开发模式：使用本地 Ollama llama3.1:8b
 	$(PY) tasks/portfolio-review/run.py
 
 flash-review: _auto-summarize ## 开发模式：DeepSeek Flash（更快）
-	OPENAI_BASE_URL=https://api.example.com/v1 \
-	OPENAI_MODEL=your-model-name \
+	OPENAI_API_KEY=$(shell grep '^OPENAI_API_KEY=' .env | cut -d= -f2) \
+	OPENAI_BASE_URL=$(shell grep '^OPENAI_BASE_URL=' .env | cut -d= -f2) \
+	OPENAI_MODEL=$(MODEL) \
 	$(PY) tasks/portfolio-review/run.py
 
 # ── 多模型快捷命令 ──
 review-deepseek: _auto-summarize ## 用 DeepSeek V4 Pro 跑周报（流式，稳定）
-	OPENAI_BASE_URL=https://api.example.com/v1 \
-	OPENAI_MODEL=your-model-name \
+	OPENAI_API_KEY=$(shell grep '^OPENAI_API_KEY=' .env | cut -d= -f2) \
+	OPENAI_BASE_URL=$(shell grep '^OPENAI_BASE_URL=' .env | cut -d= -f2) \
+	OPENAI_MODEL=$(shell grep '^OPENAI_MODEL=' .env | cut -d= -f2) \
 	PSE_MODEL_STREAM=true \
+	PSE_TIMEOUT=300 \
 	$(PY) tasks/portfolio-review/run.py
 
 review-agnes: _auto-summarize ## 用 Agnes 2.0 Flash 跑周报（非流式，免费，放宽循环参数）
 	OPENAI_API_KEY=$(shell grep '^AGNES_KEY=' .env | cut -d= -f2) \
-	OPENAI_BASE_URL=https://api.example.com/v1 \
-	OPENAI_MODEL=agnes-2.0-flash \
+	OPENAI_BASE_URL=$(shell grep '^AGNES_BASE_URL=' .env | cut -d= -f2) \
+	OPENAI_MODEL=$(shell grep '^AGNES_MODEL=' .env | cut -d= -f2) \
 	PSE_MODEL_STREAM=false \
 	PSE_TURNS_PER_CYCLE=25 \
 	PSE_MAX_PARTIAL_RETRIES=5 \
+	PSE_TIMEOUT=300 \
+	$(PY) tasks/portfolio-review/run.py
+
+review-kimi: _auto-summarize ## ⚠️ Kimi-K2.6 推理模型输出在 reasoning_content 中，周报质量不佳，建议用 MiniMax 替代
+	OPENAI_API_KEY=$(shell sed -n 's/^SCNET_KEY=//p' .env) \
+	OPENAI_BASE_URL=$(shell sed -n 's/^SCNET_BASE_URL=//p' .env) \
+	OPENAI_MODEL=$(shell sed -n 's/^SCNET_KIMI_MODEL=//p' .env) \
+	PSE_MODEL_STREAM=false \
+	PSE_TURNS_PER_CYCLE=25 \
+	PSE_MAX_PARTIAL_RETRIES=3 \
+	PSE_TIMEOUT=300 \
+	$(PY) tasks/portfolio-review/run.py
+
+review-minimax: _auto-summarize ## 用 MiniMax M2.5 跑周报（SCNet，非流式）
+	OPENAI_API_KEY=$(shell sed -n 's/^SCNET_KEY=//p' .env) \
+	OPENAI_BASE_URL=$(shell sed -n 's/^SCNET_BASE_URL=//p' .env) \
+	OPENAI_MODEL=$(shell sed -n 's/^SCNET_MINIMAX_MODEL=//p' .env) \
+	PSE_MODEL_STREAM=false \
+	PSE_TURNS_PER_CYCLE=25 \
+	PSE_MAX_PARTIAL_RETRIES=3 \
+	PSE_TIMEOUT=300 \
 	$(PY) tasks/portfolio-review/run.py
 
 # 绑定守卫：仅在对外暴露（0.0.0.0）且未设 WEB_AUTH_TOKEN 时拒绝启动

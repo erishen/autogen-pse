@@ -19,8 +19,10 @@ ASSET_LENS_DIR = os.getenv("ASSET_LENS_DIR")
 MONEY_CSV_DIR = os.getenv("MONEY_CSV_DIR")
 if not ASSET_LENS_DIR or not MONEY_CSV_DIR:
     sys.exit("请先配置 .env 中的 ASSET_LENS_DIR 和 MONEY_CSV_DIR")
-ASSET_LENS = Path(ASSET_LENS_DIR)
-CSV_DIR = Path(MONEY_CSV_DIR)
+# 统一从项目根解析相对路径，与 prepare_market.py 行为一致
+_project_root = BASE.parent.parent
+ASSET_LENS = (_project_root / ASSET_LENS_DIR).resolve() if not Path(ASSET_LENS_DIR).is_absolute() else Path(ASSET_LENS_DIR)
+CSV_DIR = (_project_root / MONEY_CSV_DIR).resolve() if not Path(MONEY_CSV_DIR).is_absolute() else Path(MONEY_CSV_DIR)
 
 _MARKET_INDICES = os.getenv("MARKET_INDICES")
 if not _MARKET_INDICES:
@@ -136,17 +138,51 @@ def build_overview(data: dict) -> str:
     )
 
 
-def build_allocation(data: dict) -> str:
+def build_allocation(data: dict, products: list = None) -> str:
+    """输出资产配置，与 build_role_breakdown 保持一致的黄金修正。
+
+    type_distribution 按产品「类型」字段聚合，但华安黄金ETF联接A 类型是"基金"实际是黄金。
+    这里同步修正：将名称含黄金关键词的基金金额从"基金"移到"黄金"，避免两个数据源冲突。
+    """
     items = data.get("type_distribution", {})
+    # 先复制一份，避免修改原始 data
+    adjusted = {}
+    for name, info in items.items():
+        adjusted[name] = {"percentage": info.get("percentage", "?"), "total_value": float(info.get("total_value", 0))}
+
+    # 修正：名称含黄金关键词的基金从"基金"移到"黄金"
+    if products:
+        gold_keywords = set(os.getenv("GOLD_KEYWORDS", "黄金,gold").split(","))
+        gold_types = set(os.getenv("GOLD_TYPES", "黄金").split(","))
+        growth_types = set(os.getenv("GROWTH_TYPES", "基金,美元基金,美元基金（美元）,美股,定投基金,ETF,个股").split(","))
+        gold_fund_amt = 0.0
+        for r in products:
+            typ = r.get("类型", "")
+            name = r.get("\ufeff名称", r.get("名称", ""))
+            if typ in growth_types and any(kw in name for kw in gold_keywords):
+                try:
+                    gold_fund_amt += float(r.get("当前金额", "0") or "0")
+                except (ValueError, TypeError):
+                    continue
+        if gold_fund_amt > 0 and "基金" in adjusted and "黄金" in adjusted:
+            # 从基金扣除，加到黄金
+            adjusted["基金"]["total_value"] -= gold_fund_amt
+            adjusted["黄金"]["total_value"] += gold_fund_amt
+            # 重新计算百分比
+            total_all = sum(v["total_value"] for v in adjusted.values())
+            if total_all > 0:
+                for v in adjusted.values():
+                    v["percentage"] = f"{v['total_value'] / total_all * 100:.2f}%"
+
     lines = []
     sorted_items = sorted(
-        items.items(),
-        key=lambda x: float(str(x[1].get("percentage", "0%")).rstrip("%")),
+        adjusted.items(),
+        key=lambda x: x[1]["total_value"],
         reverse=True,
     )
     for _name, info in sorted_items:
-        pct = info.get("percentage", "?")
-        amt = float(info.get("total_value", 0))
+        pct = info["percentage"]
+        amt = info["total_value"]
         if amt >= 10000:
             lines.append(f"  {_name}: {pct}（{amt / 10000:.1f}万元）")
         else:
@@ -154,14 +190,21 @@ def build_allocation(data: dict) -> str:
     return "\n".join(lines)
 
 
-def build_role_breakdown(data: dict) -> str:
-    """按资产角色分层计算占比，供 Specialist 引用（避免用风险分布替代）。"""
+def build_role_breakdown(data: dict, products: list) -> str:
+    """按资产角色分层计算占比，供 Specialist 引用（避免用风险分布替代）。
+
+    注意：type_distribution 按产品「类型」字段聚合，但某些产品类型与资产角色不一致
+    （如华安黄金ETF联接A 类型是"基金"但实际是黄金持仓）。
+    因此在产品级别用关键词重新分类：名称含黄金关键词的基金 → 归入黄金而非增长引擎。
+    """
     items = data.get("type_distribution", {})
     growth_types = set(os.getenv("GROWTH_TYPES", "基金,美元基金,美元基金（美元）,美股,定投基金,ETF,个股").split(","))
     defense_types = set(os.getenv("DEFENSE_TYPES", "债券,特别国债,公募固收,高端理财").split(","))
     liquid_types = set(os.getenv("LIQUID_TYPES", "理财,货币,券商理财").split(","))
     gold_types = set(os.getenv("GOLD_TYPES", "黄金").split(","))
+    gold_keywords = set(os.getenv("GOLD_KEYWORDS", "黄金,gold").split(","))
 
+    # 先按 type_distribution 聚合
     growth_pct, growth_amt = 0.0, 0.0
     defense_pct, defense_amt = 0.0, 0.0
     liquid_pct, liquid_amt = 0.0, 0.0
@@ -183,17 +226,77 @@ def build_role_breakdown(data: dict) -> str:
             gold_pct += pct
             gold_amt += amt
 
-    return (
+    # 修正：名称含黄金关键词的产品从增长引擎移到黄金
+    gold_fund_amt = 0.0
+    for r in products:
+        typ = r.get("类型", "")
+        name = r.get("\ufeff名称", r.get("名称", ""))
+        if typ in growth_types and any(kw in name for kw in gold_keywords):
+            try:
+                amt = float(r.get("当前金额", "0") or "0")
+            except (ValueError, TypeError):
+                continue
+            gold_fund_amt += amt
+
+    if gold_fund_amt > 0:
+        # 从增长引擎扣除，加到黄金
+        total_assets = growth_amt + defense_amt + liquid_amt + gold_amt
+        if total_assets > 0:
+            shift_pct = gold_fund_amt / total_assets * 100
+        else:
+            shift_pct = 0.0
+        growth_amt -= gold_fund_amt
+        growth_pct -= shift_pct
+        gold_amt += gold_fund_amt
+        gold_pct += shift_pct
+
+    # ── 形式视角（原始四行，保留不变）──
+    formal_lines = (
         f"  增长引擎: {growth_pct:.2f}%（{growth_amt / 10000:.1f}万元）\n"
         f"  防御底仓: {defense_pct:.2f}%（{defense_amt / 10000:.1f}万元）\n"
         f"  流动性储备: {liquid_pct:.2f}%（{liquid_amt / 10000:.1f}万元）\n"
         f"  黄金: {gold_pct:.2f}%（{gold_amt / 10000:.1f}万元）"
     )
 
+    # ── 功能视角：将 DEFENSIVE_LIQUID_TYPES 从流动性移入防御 ──
+    defensive_liquid_types = set(
+        os.getenv("DEFENSIVE_LIQUID_TYPES", "理财,高端理财").split(",")
+    )
+    # 只取同时存在于 liquid_types 中的类型（避免误移动已在防御中的高端理财）
+    dl_names = defensive_liquid_types & liquid_types
+
+    dl_pct, dl_amt = 0.0, 0.0
+    for name, info in items.items():
+        if name in dl_names:
+            pct = float(str(info.get("percentage", "0%")).rstrip("%"))
+            amt = float(info.get("total_value", 0))
+            dl_pct += pct
+            dl_amt += amt
+
+    func_lines = ""
+    if dl_amt > 0:
+        func_defense_pct = defense_pct + dl_pct
+        func_defense_amt = defense_amt + dl_amt
+        func_liquid_pct = liquid_pct - dl_pct
+        func_liquid_amt = liquid_amt - dl_amt
+        dl_display = "、".join(sorted(dl_names))
+        func_lines = (
+            f"\n\n  ▶ 功能视角（{dl_display}视为防御）：\n"
+            f"    增长引擎: {growth_pct:.2f}%（{growth_amt / 10000:.1f}万元）\n"
+            f"    防御（含低波理财）: {func_defense_pct:.2f}%（{func_defense_amt / 10000:.1f}万元）\n"
+            f"    纯流动性: {func_liquid_pct:.2f}%（{func_liquid_amt / 10000:.1f}万元）\n"
+            f"    黄金: {gold_pct:.2f}%（{gold_amt / 10000:.1f}万元）\n"
+            f"    ⚠️ {dl_display}为低波固收产品（90+天持有期，本金安全），功能上等价防御底仓。\n"
+            f"    分析配置比例是否合理时，必须以功能视角为准；形式视角仅供合规参考。"
+        )
+
+    return formal_lines + func_lines
+
 
 def build_growth_details(products: list) -> str:
     """列出增长引擎每只产品的关键数据，供 Specialist 逐只分析加减仓。"""
     growth_types = {"基金", "美元基金", "美元基金（美元）", "美股", "定投基金", "ETF", "个股"}
+    gold_keywords = set(os.getenv("GOLD_KEYWORDS", "黄金,gold").split(","))
     skip_keywords = set(os.getenv("GROWTH_SKIP_KEYWORDS", "").split(",")) if os.getenv("GROWTH_SKIP_KEYWORDS") else set()
     skip_platforms = set(os.getenv("GROWTH_SKIP_PLATFORMS", "").split(",")) if os.getenv("GROWTH_SKIP_PLATFORMS") else set()
     usd_rate, hkd_rate = _get_exchange_rates()
@@ -202,7 +305,10 @@ def build_growth_details(products: list) -> str:
         typ = r.get("类型", "")
         if typ not in growth_types:
             continue
-        name = r.get("\ufeff名称", r.get("名称", ""))[:22]
+        name = r.get("\ufeff名称", r.get("名称", ""))
+        # 排除黄金类基金（已归入黄金持仓明细）
+        if any(kw in name for kw in gold_keywords):
+            continue
         if any(kw in name for kw in skip_keywords):
             continue
         plat = r.get("所属平台", "")
@@ -226,6 +332,43 @@ def build_growth_details(products: list) -> str:
             f"| {name} | {plat} | ¥{amt/10000:.2f}万 | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
         )
     return "\n".join(lines) if len(lines) > 2 else ""
+
+
+def build_gold_details(products: list) -> str:
+    """列出黄金持仓每只产品的关键数据，供 Specialist 逐只分析加减仓。
+
+    黄金是对冲仓位，独立于增长引擎和防御底仓，必须逐只覆盖。
+    包括：黄金ETF联接、银行黄金活期/定期、实物黄金等。
+    也包括类型为"基金"但名称含黄金关键词的产品（如华安黄金ETF联接A）。
+    """
+    gold_types = set(os.getenv("GOLD_TYPES", "黄金").split(","))
+    gold_keywords = set(os.getenv("GOLD_KEYWORDS", "黄金,gold").split(","))
+    lines = ["| 名称 | 平台 | 金额 | 天数 | 实亏 | 年化 |", "|------|------|:---:|:---:|:---:|:---:|"]
+    total = 0.0
+    for r in products:
+        typ = r.get("类型", "")
+        name = r.get("\ufeff名称", r.get("名称", ""))
+        # 类型为黄金，或类型为基金但名称含黄金关键词
+        is_gold_type = typ in gold_types
+        is_gold_name = any(kw in name for kw in gold_keywords)
+        if not (is_gold_type or is_gold_name):
+            continue
+        plat = r.get("所属平台", "")
+        try:
+            amt = float(r.get("当前金额", "0") or "0")
+            days = int(r.get("投资天数", "0") or "0")
+            real_val = float(r.get("实际收益率(%)", "0") or "0")
+            ann = float(r.get("年化收益率(%)", "0") or "0")
+            total += amt
+        except (ValueError, TypeError):
+            continue
+        lines.append(
+            f"| {name[:22]} | {plat} | ¥{amt/10000:.2f}万 | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
+        )
+    if len(lines) <= 2:
+        return ""
+    lines.append(f"| **合计** | | **¥{total/10000:.2f}万** | | | |")
+    return "\n".join(lines)
 
 
 def build_risk(data: dict) -> str:
@@ -416,12 +559,12 @@ def detect_issues(products: list) -> str:
     if loss:
         loss.sort(key=lambda x: -x[0])
         body = "\n".join(line for _, line in loss)
-        sections.append(f"### 需关注 — 长期亏损（{len(loss)}只）\n{body}")
+        sections.append(f"### 需关注 — 长期持有且累计亏损（{len(loss)}只）\n{body}")
     if cur_loss:
         cur_loss.sort()  # 从最亏到最不亏
         body = "\n".join(line for _, line in cur_loss)
         sections.append(
-            f"### 当期亏损（{len(cur_loss)}只，收益 < {CUR_LOSS_THRESHOLD}%）\n{body}"
+            f"### 累计亏损（持有以来实亏 < {CUR_LOSS_THRESHOLD}%，非本周跌幅）\n{body}"
         )
     if low_eff or big_fixed:
         items = low_eff + big_fixed
@@ -437,8 +580,13 @@ def detect_issues(products: list) -> str:
         sections_parts = []
         if fixed_income:
             total_amt = sum(amt for amt, _, _ in fixed_income)
-            min_ret = min(float(l.split("年化")[1].split("%")[0]) for _, _, l in fixed_income if "年化" in l)
-            max_ret = max(float(l.split("年化")[1].split("%")[0]) for _, _, l in fixed_income if "年化" in l)
+            annual_values = []
+            for _, _, l in fixed_income:
+                m = re.search(r"年化([\d.]+)%", l)
+                if m:
+                    annual_values.append(float(m.group(1)))
+            min_ret = min(annual_values) if annual_values else 0.0
+            max_ret = max(annual_values) if annual_values else 0.0
             sections_parts.append(
                 f"- 💰 低效固收：¥{total_amt/10000:.0f}万（{len(fixed_income)}只，年化{min_ret:.1f}%-{max_ret:.1f}%），明细见原始数据"
             )
@@ -487,11 +635,11 @@ def build_time_groups(data: dict) -> str:
     return "\n".join(lines)
 
 
-def get_market() -> tuple[str, str]:
-    """返回 (行情日期, markdown文本)。行情日期取 money-csv 最新数据的日期。"""
+def get_market() -> tuple[str, str, dict, dict]:
+    """返回 (行情日期, markdown文本, 上一行数据, 当前行数据)。行情日期取 money-csv 最新数据的日期。"""
     dirs = sorted(CSV_DIR.glob("money_csv_*"), reverse=True)
     if not dirs:
-        return "", "（无数据）"
+        return "", "（无数据）", {}, {}
     with open(dirs[0] / "资产汇总-表格 1.csv") as f:
         rows = list(csv.DictReader(f))
     pv, cv = rows[-2], rows[-1]
@@ -515,7 +663,6 @@ def get_market() -> tuple[str, str]:
 
     # 额外指标（非行情指数但有用）
     extra_cols = []
-    extra_cols = []
     extra_names = _env_list("MARKET_EXTRA") if os.getenv("MARKET_EXTRA") else []
     for name in extra_names:
         extra_cols.append((name, name))
@@ -531,7 +678,72 @@ def get_market() -> tuple[str, str]:
         except (ValueError, KeyError):
             pass
 
-    return data_date, "\n".join(lines)
+    return data_date, "\n".join(lines), pv, cv
+
+
+def build_market_context(prev: dict, cv: dict) -> str:
+    """基于周涨跌幅自动生成市场事件摘要，帮助 LLM 理解数字背后的市场环境。"""
+    alerts = []
+    crash_indices = []  # 单周跌幅 > 3% 的指数
+    surge_indices = []  # 单周涨幅 > 3% 的指数
+
+    for name in MARKET_INDICES:
+        try:
+            p, c = float(prev[name]), float(cv[name])
+            chg = (c - p) / abs(p) * 100 if p else 0
+            if chg <= -5:
+                crash_indices.append((name, chg))
+            elif chg <= -3:
+                crash_indices.append((name, chg))
+            if chg >= 5:
+                surge_indices.append((name, chg))
+            elif chg >= 3:
+                surge_indices.append((name, chg))
+        except (ValueError, KeyError):
+            pass
+
+    # VIX / 恐慌指标
+    extra_names = _env_list("MARKET_EXTRA") if os.getenv("MARKET_EXTRA") else []
+    vix_val = None
+    vix_chg = None
+    for name in extra_names:
+        try:
+            c_raw = str(cv.get(name, "0"))
+            p_raw = str(prev.get(name, "0"))
+            c = float(c_raw.replace("%", ""))
+            p = float(p_raw.replace("%", ""))
+            chg = (c - p) / abs(p) * 100 if p else 0
+            if "恐慌" in name or "VIX" in name or "VXX" in name:
+                vix_val = c
+                vix_chg = chg
+        except (ValueError, KeyError):
+            pass
+
+    # 判断市场环境
+    if crash_indices:
+        names_str = "、".join(f"{n}({chg:+.1f}%)" for n, chg in crash_indices)
+        alerts.append(f"⚠️ **本周市场大幅下跌**：{names_str}")
+        if len(crash_indices) >= 3:
+            alerts.append("🔴 多指数同步暴跌，市场处于**恐慌**状态，建议适用恐慌档（VIX>25或周跌幅>5%的指数≥3个）")
+        elif vix_val and vix_val >= 20:
+            alerts.append(f"🟡 市场波动加剧（VIX={vix_val:.1f}），接近恐慌阈值，建议审慎加仓，分批入场")
+
+    if surge_indices:
+        names_str = "、".join(f"{n}({chg:+.1f}%)" for n, chg in surge_indices)
+        alerts.append(f"📈 **本周市场大幅上涨**：{names_str}")
+
+    if vix_val:
+        if vix_val >= 25:
+            alerts.append(f"🔴 VIX={vix_val:.1f} 已进入恐慌区间（>25），适用恐慌档，暂缓增长引擎加仓")
+        elif vix_val >= 20:
+            alerts.append(f"🟡 VIX={vix_val:.1f} 接近恐慌阈值（20-25），若配合大幅下跌应视同恐慌环境处理")
+        elif vix_val < 15:
+            alerts.append(f"🟢 VIX={vix_val:.1f} 处于贪婪区间（<15），市场情绪乐观但需警惕追高")
+
+    if not alerts:
+        return ""
+
+    return "## ⚡ 本周市场事件（自动检测）\n\n" + "\n".join(f"- {a}" for a in alerts)
 
 
 def build_gold_trend() -> str:
@@ -814,8 +1026,9 @@ def main():
     data = load_json()
     products = load_products()
     check_freshness(_latest_output_file(".json"))
-    data_date, market = get_market()
+    data_date, market, prev_row, curr_row = get_market()
     gold_trend = build_gold_trend()
+    market_context = build_market_context(prev_row, curr_row)
     property_trend = build_property_trend()
     exchange_rates = build_exchange_rates()
     dca_review = build_dca_review(products)
@@ -848,21 +1061,27 @@ def main():
 
 ## 资产配置
 
-{build_allocation(data)}
+{build_allocation(data, products)}
 
 ## 角色分层占比
 
-{build_role_breakdown(data)}
+{build_role_breakdown(data, products)}
 
 ## 增长引擎持仓明细（逐只分析加减仓）
 
 {build_growth_details(products)}
+
+## 黄金持仓明细（逐只覆盖，对冲仓位不止损）
+
+{build_gold_details(products)}
 
 ## 风险分布
 
 {build_risk(data)}
 
 {market}
+
+{market_context}
 
 ## 投资效率
 

@@ -1,17 +1,19 @@
 """RoundRobinGroupChat 编排层 — 含循环控制、执行 Trace 和 Token 统计。"""
 
 import json
+import logging
 import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from autogen_agentchat.base import TaskResult
 from autogen_agentchat.conditions import ExternalTermination, TextMentionTermination
 from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.teams import RoundRobinGroupChat
+from autogen_core.models import LLMMessage, UserMessage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 from .agents import (
@@ -21,6 +23,8 @@ from .agents import (
 )
 from .config import settings
 from .tools import AgentTokenStats, TokenReport, TokenTracker
+
+logger = logging.getLogger(__name__)
 
 # ── 循环控制参数 ──
 MAX_PARTIAL_RETRIES = int(os.getenv("PSE_MAX_PARTIAL_RETRIES", "3"))
@@ -44,9 +48,71 @@ def _create_model_client() -> OpenAIChatCompletionClient:
             "vision": False,
             "function_calling": True,
             "json_output": True,
+            "structured_output": False,  # 非 OpenAI 模型不支持 structured output
             "family": "unknown",
         }
-    return OpenAIChatCompletionClient(**kwargs, timeout=PSE_TIMEOUT)
+    inner = OpenAIChatCompletionClient(**kwargs, timeout=PSE_TIMEOUT)
+    return _SafeModelClient(inner)
+
+
+class _SafeModelClient(OpenAIChatCompletionClient):
+    """包装 OpenAIChatCompletionClient，修复第三方 API 的兼容性问题：
+
+    1. 空 user 消息填充占位符 — 推理模型可能返回 content=null，
+       AutoGen 转为空字符串，某些 API 拒绝空 user 消息导致 400。
+    2. reasoning_content 回填 — 推理模型（如 Kimi-K2.6）将实际输出
+       放在 reasoning_content 中而 content=null，AutoGen 存入 thought 字段。
+       当 content 为空但 thought 有内容时，将 thought 回填到 content，
+       否则 PSE 多轮对话中 Specialist 会输出空消息导致死循环。
+    """
+
+    def __init__(self, inner: OpenAIChatCompletionClient):
+        # 不调用 super().__init__()，直接复用内部 client 的状态
+        self.__dict__ = inner.__dict__.copy()
+        self._inner = inner
+
+    def _sanitize_messages(self, messages: Sequence[LLMMessage]) -> list[LLMMessage]:
+        """过滤/修复可能导致 API 400 的消息。"""
+        result = []
+        for msg in messages:
+            if isinstance(msg, UserMessage):
+                content = msg.content
+                # 空字符串或纯空白的 user 消息 → 填充占位符
+                if isinstance(content, str) and not content.strip():
+                    msg = UserMessage(
+                        content="(继续执行上一条指令)",
+                        source=msg.source,
+                    )
+                    logger.debug("替换空 user 消息: source=%s", msg.source)
+            result.append(msg)
+        return result
+
+    def _patch_result(self, result):
+        """当 content 为空但 thought（reasoning_content）有内容时，回填到 content。
+
+        注意：推理模型（如 Kimi-K2.6）的 thought 可能包含推演过程而非最终结论，
+        回填后内容质量可能不如正常 content。但对于 PSE 多轮对话来说，
+        有内容（即使是推理过程）比空内容更好，否则会导致死循环。
+        """
+        if isinstance(result.content, str) and not result.content.strip():
+            if result.thought and result.thought.strip():
+                logger.info("reasoning_content 回填: thought 长度=%d", len(result.thought))
+                result.content = result.thought
+        return result
+
+    async def create(self, messages, **kwargs):
+        result = await self._inner.create(self._sanitize_messages(messages), **kwargs)
+        return self._patch_result(result)
+
+    async def create_stream(self, messages, **kwargs):
+        result = None
+        async for chunk in self._inner.create_stream(self._sanitize_messages(messages), **kwargs):
+            if isinstance(chunk, str):
+                yield chunk
+            else:
+                # chunk 是 CreateResult
+                result = self._patch_result(chunk)
+                yield result
 
 
 def create_pse_team(

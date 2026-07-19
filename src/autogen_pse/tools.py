@@ -1,6 +1,8 @@
 """共享工具函数、Token 计数器和 RAG 知识库检索。"""
 
 import logging
+import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -213,18 +215,31 @@ def retrieve_knowledge(
         rag.faiss_persist_dir = str(kb_dir / "vector_store")
         rag.load_vector_store()
 
+        # 只接受投资策略相关的文档来源目录，家庭资产/职业/健康等与周报无关
+        _invest_source_dirs = set(
+            os.getenv(
+                "RAG_SOURCE_DIRS",
+                "03-投资策略备忘,01-Investment,investment,strategy",
+            ).split(",")
+        )
+
         results: dict[str, list[dict[str, Any]]] = {}
         for query in queries:
             try:
                 docs = rag.retrieve_hybrid(query, k=3, bm25_weight=0.3)
-                results[query] = [
-                    {
-                        "content": doc.page_content[:500],
-                        "category": doc.metadata.get("category", "unknown"),
-                        "source": doc.metadata.get("source", "unknown"),
-                    }
-                    for doc in docs
-                ]
+                for doc in docs:
+                    source = doc.metadata.get("source", "unknown")
+                    # 检查 source 路径是否包含投资策略相关目录
+                    if not any(d in source for d in _invest_source_dirs):
+                        logger.debug("跳过非投资策略文档: %s", source)
+                        continue
+                    results.setdefault(query, []).append(
+                        {
+                            "content": doc.page_content[:500],
+                            "category": doc.metadata.get("category", "unknown"),
+                            "source": source,
+                        }
+                    )
             except Exception as e:
                 logger.warning("查询 '%s' 失败: %s", query, e)
                 results[query] = []
@@ -259,16 +274,18 @@ def format_knowledge_context(knowledge: dict[str, list[dict[str, Any]]]) -> str:
 
     lines = [
         "=== 投资人个人知识库（投资偏好、策略经验） ===",
+        "⚠️ 以下为历史投资经验记录，仅供了解投资人偏好。当与 Specialist 规则冲突时，以 Specialist 规则为准（如止损线、配置比例目标等）。",
         "",
     ]
     INVEST_CATS = {
         "01-Investment",
-        "03-Financial",
-        "advice",
-        "financial",
         "investment",
         "strategy",
     }
+    # 敏感内容过滤：排除非本人资产信息（模式从 RAG_EXCLUDE_PATTERNS 环境变量读取）
+    _exclude_cfg = os.getenv("RAG_EXCLUDE_PATTERNS", "")
+    _EXCLUDE_PATTERNS = re.compile("|".join(_exclude_cfg.split(","))) if _exclude_cfg else None
+
     for query, docs in knowledge.items():
         if not docs:
             continue
@@ -276,8 +293,18 @@ def format_knowledge_context(knowledge: dict[str, list[dict[str, Any]]]) -> str:
         docs = [d for d in docs if d.get("category", "") in INVEST_CATS]
         if not docs:
             continue
+        # 过滤含敏感信息的文档片段（如配偶/家庭资产等非本人信息）
+        filtered = []
+        for d in docs:
+            content = d.get("content", "")
+            if _EXCLUDE_PATTERNS and _EXCLUDE_PATTERNS.search(content):
+                logger.info("过滤掉含敏感信息的RAG文档: category=%s", d.get("category"))
+                continue
+            filtered.append(d)
+        if not filtered:
+            continue
         lines.append(f"关于「{query}」的相关知识：")
-        for i, doc in enumerate(docs, 1):
+        for doc in filtered:
             lines.append(f"  [{doc['category']}] {doc['content'][:300]}")
         lines.append("")
 

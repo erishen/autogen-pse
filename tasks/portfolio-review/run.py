@@ -90,25 +90,29 @@ def extract_review_from_trace(task: str) -> str | None:
         ts = f"{parts[1][:4]}-{parts[1][4:6]}-{parts[1][6:]} {parts[2][:2]}:{parts[2][2:4]}:{parts[2][4:]}"
         return f"# 投资组合诊断 — 最终结论\n\n{result}\n\n---\n*报告生成时间: {ts}*"
 
-    # 无「最终结论」标记时，尝试从尾部关键标记处截取
+    # 无「最终结论」标记时，尝试从第一个核心章节开始截取
     parts = files[0].stem.split("_")
     ts = f"{parts[1][:4]}-{parts[1][4:6]}-{parts[1][6:]} {parts[2][:2]}:{parts[2][2:4]}:{parts[2][4:]}"
+    # 尝试从五章节结构的第一个章节开始截取（越靠前越好，保留完整报告）
     for marker in [
-        "### 整体评估",
-        "## 🎯 整体评估",
-        "整体评估",
-        "### 建议操作",
+        "### 市场回顾",
         "### 关键发现",
-        "### 后续跟踪",
-        "建议操作",
-        "关键发现",
+        "### 建议操作",
+        "### 下周执行计划",
+        "### 整体评估",
     ]:
-        pos = last.rfind(marker)
-        if pos > len(last) * 0.4:  # 确保在后半部分，避免匹配到文中引用
+        pos = last.find(marker)  # 用 find 而非 rfind，取最早出现位置
+        if pos >= 0:
             result = last[pos:].strip()
             result = re.split(r"\n---\n+", result, maxsplit=1)[0].strip()
             return f"# 投资组合诊断 — 最终结论\n\n{result}\n\n---\n*报告生成时间: {ts}*"
-    # 兜底：取最后 30%
+    # 兜底：取全文（去掉开头的分析过程，寻找第一个 ### 标题）
+    first_heading = re.search(r"^###\s+", last, re.MULTILINE)
+    if first_heading:
+        result = last[first_heading.start():].strip()
+        result = re.split(r"\n---\n+", result, maxsplit=1)[0].strip()
+        return f"# 投资组合诊断 — 最终结论\n\n{result}\n\n---\n*报告生成时间: {ts}*"
+    # 最终兜底：取最后 30%
     cutoff = len(last) * 7 // 10
     return f"# 投资组合诊断 — 最终结论\n\n{last[cutoff:].strip()}"
 
@@ -201,11 +205,14 @@ async def main():
     result, report = await run_task(team, task, verbose=True)
     print(report.summary())
 
-    # 从 trace 提取并保存 review 文件
+    # 从 trace 提取并保存 review 文件（按模型分目录，避免不同模型输出互相覆盖）
     review = extract_review_from_trace(task)
     if review:
         review = sanitize_review(review)
-        review_file = BASE / f"output/weekly_review_{data_date}.md"
+        model_name = settings.OPENAI_MODEL.split("/")[-1]  # 取模型名最后一段作为目录名
+        model_dir = BASE / f"output/{model_name}"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        review_file = model_dir / f"weekly_review_{data_date}.md"
         review_file.write_text(review, encoding="utf-8")
         print(f"✅ Review 已保存 → {review_file}")
     else:
