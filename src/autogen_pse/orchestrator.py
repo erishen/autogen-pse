@@ -36,11 +36,22 @@ TRACE_DIR = settings.trace_dir
 
 
 def _create_model_client() -> OpenAIChatCompletionClient:
+    # 推理模型（deepseek-v4-flash, Kimi-K2.6 等）的 reasoning_tokens 计入 max_tokens，
+    # 导致 content 被截断为空。解决方案：
+    # - 推理模型：用 max_completion_tokens 代替 max_tokens，reasoning 不计入此预算
+    # - 普通模型：用 max_tokens
+    model_name = settings.OPENAI_MODEL.lower()
+    is_reasoning = any(kw in model_name for kw in ["flash", "reasoner", "kimi", "r1", "v4"])
+
     kwargs: dict = dict(
         model=settings.OPENAI_MODEL,
         api_key=settings.OPENAI_API_KEY,
-        max_tokens=8192,  # 非流式 API 限制生成长度，避免超时
     )
+    if is_reasoning:
+        # max_completion_tokens: reasoning 不计入此预算，只限制最终输出
+        kwargs["max_completion_tokens"] = int(os.getenv("PSE_MAX_TOKENS", "8192"))
+    else:
+        kwargs["max_tokens"] = int(os.getenv("PSE_MAX_TOKENS", "8192"))
     if settings.OPENAI_BASE_URL:
         kwargs["base_url"] = settings.OPENAI_BASE_URL
     if not settings.OPENAI_MODEL.startswith("gpt-"):
@@ -60,10 +71,12 @@ class _SafeModelClient(OpenAIChatCompletionClient):
 
     1. 空 user 消息填充占位符 — 推理模型可能返回 content=null，
        AutoGen 转为空字符串，某些 API 拒绝空 user 消息导致 400。
-    2. reasoning_content 回填 — 推理模型（如 Kimi-K2.6）将实际输出
-       放在 reasoning_content 中而 content=null，AutoGen 存入 thought 字段。
-       当 content 为空但 thought 有内容时，将 thought 回填到 content，
-       否则 PSE 多轮对话中 Specialist 会输出空消息导致死循环。
+    2. 推理模型 content 为空时的两步处理 — 推理模型（如 deepseek-v4-flash、
+       Kimi-K2.6）将全部输出放在 reasoning_content 中而 content=null。
+       AutoGen 存入 thought 字段，content 为空字符串。
+       处理流程：
+       a) 优先重试：将 thought 摘要作为上下文，让模型输出正式中文结论
+       b) 兜底回填：如果重试仍失败，将 thought 回填到 content（防止死循环）
     """
 
     def __init__(self, inner: OpenAIChatCompletionClient):
@@ -87,22 +100,63 @@ class _SafeModelClient(OpenAIChatCompletionClient):
             result.append(msg)
         return result
 
-    def _patch_result(self, result):
-        """当 content 为空但 thought（reasoning_content）有内容时，回填到 content。
+    def _has_real_content(self, result) -> bool:
+        """判断 result.content 是否包含实质内容（非空白、非纯推理草稿）。"""
+        if not isinstance(result.content, str):
+            return bool(result.content)
+        text = result.content.strip()
+        if not text:
+            return False
+        # 如果 content 全是英文且超长，很可能是推理草稿
+        cn_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+        if cn_chars == 0 and len(text) > 200:
+            logger.warning("检测到纯英文长文本（%d字符），疑似推理草稿", len(text))
+            return False
+        return True
 
-        注意：推理模型（如 Kimi-K2.6）的 thought 可能包含推演过程而非最终结论，
-        回填后内容质量可能不如正常 content。但对于 PSE 多轮对话来说，
-        有内容（即使是推理过程）比空内容更好，否则会导致死循环。
-        """
+    def _backfill_thought(self, result):
+        """兜底：将 thought 回填到 content，防止空消息死循环。"""
         if isinstance(result.content, str) and not result.content.strip():
             if result.thought and result.thought.strip():
-                logger.info("reasoning_content 回填: thought 长度=%d", len(result.thought))
+                logger.warning("thought 回填（兜底）: thought 长度=%d", len(result.thought))
                 result.content = result.thought
         return result
 
     async def create(self, messages, **kwargs):
-        result = await self._inner.create(self._sanitize_messages(messages), **kwargs)
-        return self._patch_result(result)
+        sanitized = self._sanitize_messages(messages)
+        result = await self._inner.create(sanitized, **kwargs)
+
+        if not self._has_real_content(result):
+            if result.thought and result.thought.strip():
+                # 第一步：将 thought 摘要作为上下文，重试让模型输出正式结论
+                thought_preview = result.thought[:2000]
+                context_msg = UserMessage(
+                    content=(
+                        f"你刚才完成了推理分析（摘要如下），请基于推理结果，"
+                        f"直接输出正式的中文结论，严格按照格式要求，"
+                        f"不要输出推理过程：\n\n{thought_preview}"
+                    ),
+                    source="user",
+                )
+                logger.warning(
+                    "推理模型 content 为空（thought 长度=%d），带上下文重试",
+                    len(result.thought),
+                )
+                try:
+                    retry_result = await self._inner.create(
+                        sanitized + [context_msg], **kwargs
+                    )
+                    if self._has_real_content(retry_result):
+                        return retry_result
+                    # 重试成功但内容仍无实质 → 兜底回填
+                    logger.warning("重试后 content 仍无实质内容，兜底回填 thought")
+                    return self._backfill_thought(retry_result)
+                except Exception as e:
+                    logger.error("重试失败: %s，兜底回填 thought", e)
+                    return self._backfill_thought(result)
+            else:
+                logger.warning("content 为空且无 thought，无法处理")
+        return result
 
     async def create_stream(self, messages, **kwargs):
         result = None
@@ -110,8 +164,7 @@ class _SafeModelClient(OpenAIChatCompletionClient):
             if isinstance(chunk, str):
                 yield chunk
             else:
-                # chunk 是 CreateResult
-                result = self._patch_result(chunk)
+                result = chunk
                 yield result
 
 
