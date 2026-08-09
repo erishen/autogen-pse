@@ -184,6 +184,7 @@ All four share the **PSE role model** and a **verify→fix loop**, but differ in
 
 ## Related Articles
 - [Building a PSE Tri-Role Closed Loop with AutoGen: A Retriable, Traceable Agent Collaboration Framework](https://erishen.cn/autogen-pse-triangle-agent-framework-en/)
+- [AutoGen PSE Architecture Deep Dive: Building Reliable Multi-Agent Collaboration with the Planner/Specialist/Evaluator Pattern](https://erishen.cn/autogen-pse-architecture-en/)
 
 ## License
 

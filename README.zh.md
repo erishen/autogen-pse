@@ -188,3 +188,4 @@ MIT
 
 ## 相关文章
 - [基于 AutoGen 构建 PSE 三角色闭环：一个可重试、可追溯的 Agent 协作框架](https://erishen.cn/autogen-pse-triangle-agent-framework/)
+- [AutoGen PSE 架构解析：用 Planner/Specialist/Evaluator 模式构建可靠的多智能体协作系统](https://erishen.cn/autogen-pse-architecture/)
