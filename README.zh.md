@@ -187,6 +187,4 @@ MIT
 ---
 
 ## 相关文章
-
-- 中文: [Autogen PSE：三角色 Agent 框架](https://erishen.cn/autogen-pse-triangle-agent-framework/)
-- English: [Autogen PSE: A Triangle-Agent Framework](https://erishen.cn/autogen-pse-triangle-agent-framework-en/)
+- [基于 AutoGen 构建 PSE 三角色闭环：一个可重试、可追溯的 Agent 协作框架](https://erishen.cn/autogen-pse-triangle-agent-framework/)
