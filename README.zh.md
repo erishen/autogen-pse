@@ -183,3 +183,10 @@ tasks/my-task/
 ## 许可证
 
 MIT
+
+---
+
+## 相关文章
+
+- 中文: [Autogen PSE：三角色 Agent 框架](https://erishen.cn/autogen-pse-triangle-agent-framework/)
+- English: [Autogen PSE: A Triangle-Agent Framework](https://erishen.cn/autogen-pse-triangle-agent-framework-en/)

@@ -180,6 +180,13 @@ All four share the **PSE role model** and a **verify→fix loop**, but differ in
 | Reference use | **asset-lens → next-week investment advice** | project code → bilingual article → WordPress | CRM data-quality QA + weekly relationship review | résumé tailoring (RAG) |
 | Best for | cheap, frequent drafts | richer multi-agent publishing | workflows needing explicit state control | RAG-grounded generation |
 
+---
+
+## Related Articles
+
+- English: [Autogen PSE: A Triangle-Agent Framework](https://erishen.cn/autogen-pse-triangle-agent-framework-en/)
+- 中文: [Autogen PSE：三角色 Agent 框架](https://erishen.cn/autogen-pse-triangle-agent-framework/)
+
 ## License
 
 MIT
