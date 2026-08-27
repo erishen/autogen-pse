@@ -20,3 +20,4 @@ outputs/
 # 前端
 web/dist/
 web/node_modules/
+.serena
