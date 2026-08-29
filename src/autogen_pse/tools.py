@@ -219,7 +219,7 @@ def retrieve_knowledge(
         _invest_source_dirs = set(
             os.getenv(
                 "RAG_SOURCE_DIRS",
-                "03-投资策略备忘,01-Investment,investment,strategy",
+                "investment-strategy,01-investment-notes,investment,strategy",
             ).split(",")
         )
 
