@@ -66,8 +66,30 @@ def get_csv_date() -> str:
     return rows[-1]["日期"].replace(".", "")
 
 
+def refresh_asset_lens() -> None:
+    """数据过期时自动刷新本地快照。
+
+    analyze 负责产出 prepare.py 依赖的 投资收益率分析_*.json；calculate 与
+    compare 虽不写该 JSON，但能保证收益重算与市场对比为最新，故一并执行。
+    """
+    for target in ("calculate", "analyze", "compare"):
+        print(f"🔄 自动刷新：make {target}（asset-lens）", flush=True)
+        try:
+            subprocess.run(
+                ["make", target],
+                cwd=str(ASSET_LENS),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or e.stdout or str(e))[:800]
+            sys.exit(f"❌ 自动刷新失败（make {target}）：{err}")
+
+
 def check_freshness(json_path: Path) -> None:
-    """检查 JSON 数据日期是否与最新 CSV 一致，不一致则退出。"""
+    """检查 JSON 数据日期是否与最新 CSV 一致；不一致则自动刷新 asset-lens 后重试。"""
     import re
 
     m = re.search(r"(\d{8})", json_path.name)
@@ -79,10 +101,22 @@ def check_freshness(json_path: Path) -> None:
         return
     if json_date < csv_date:
         print(
-            f"❌ 数据过期: JSON 截止 {json_date}，CSV 已有 {csv_date} 的数据\n"
-            f"   请先确保 asset-lens 的 make calculate 执行成功，再重试。"
+            f"⚠️ 数据过期: JSON 截止 {json_date}，CSV 已有 {csv_date} 的数据，"
+            f"自动执行 make calculate / analyze / compare 刷新…",
+            flush=True,
         )
-        sys.exit(1)
+        refresh_asset_lens()
+        # 刷新后重新取最新 JSON 并复检
+        json_path = _latest_output_file(".json")
+        m2 = re.search(r"(\d{8})", json_path.name)
+        new_date = m2.group(1) if m2 else ""
+        if new_date and new_date < csv_date:
+            print(
+                f"❌ 自动刷新后仍数据过期: JSON 截止 {new_date}，CSV 已有 {csv_date} 的数据\n"
+                f"   请检查 asset-lens 的数据源（REAL_DATA_PATH）是否包含最新 CSV。"
+            )
+            sys.exit(1)
+        print(f"✅ 已刷新至 {new_date}", flush=True)
 
 
 def load_products() -> list:
@@ -1023,9 +1057,11 @@ def build_c_class_alert(products: list) -> str:
 
 
 def main():
+    # 数据可能过期：先检查，过期则自动刷新 asset-lens（calculate/analyze/compare）再继续，
+    # 确保后续 load_json 读到的是刷新后的最新快照。
+    check_freshness(_latest_output_file(".json"))
     data = load_json()
     products = load_products()
-    check_freshness(_latest_output_file(".json"))
     data_date, market, prev_row, curr_row = get_market()
     gold_trend = build_gold_trend()
     market_context = build_market_context(prev_row, curr_row)
