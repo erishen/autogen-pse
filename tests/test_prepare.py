@@ -116,7 +116,7 @@ def _setup_env():
                     "当前金额": "5000",
                 }
             ],
-            "当期亏损",
+            "累计亏损",
             1,
         ),
         (
@@ -130,7 +130,7 @@ def _setup_env():
                     "当前金额": "5000",
                 }
             ],
-            "当期亏损",
+            "累计亏损",
             0,
         ),
     ],
@@ -181,7 +181,7 @@ def test_build_c_class_alert():
     assert "增强C" in result
     assert "增强A" not in result
     assert "短持C" not in result
-    assert "红利Y" in result  # Y 类也处理
+    assert "分红Y" in result  # Y 类也处理
 
 
 # ── extract_review_from_trace ──

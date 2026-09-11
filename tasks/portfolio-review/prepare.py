@@ -1148,6 +1148,11 @@ def main():
         # 使用 money-csv 数据的日期，而不是当前日期
         archive_file = archive_dir / f"weekly_{data_date}.md"
         archive_file.write_text(md, encoding="utf-8")
+        # 归档目录只保留最近 26 份周报（约半年），防止无限增长
+        archived = sorted(archive_dir.glob("weekly_*.md"))
+        if len(archived) > 26:
+            for stale in archived[:-26]:
+                stale.unlink()
         print(f"✅ 已写入 {out} ({len(md)} 字符) → 已归档 {archive_file}")
 
 

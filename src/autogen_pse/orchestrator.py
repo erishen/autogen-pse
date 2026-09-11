@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 MAX_PARTIAL_RETRIES = int(os.getenv("PSE_MAX_PARTIAL_RETRIES", "3"))
 MAX_FAIL_RETRIES = int(os.getenv("PSE_MAX_FAIL_RETRIES", "2"))
 TURNS_PER_CYCLE = int(os.getenv("PSE_TURNS_PER_CYCLE", "9"))
-PSE_TIMEOUT = int(os.getenv("PSE_TIMEOUT", "180"))
+PSE_TIMEOUT = int(os.getenv("PSE_TIMEOUT", "300"))
 
 TRACE_DIR = settings.trace_dir
 
@@ -380,18 +380,24 @@ async def run_task(
 
 
 def _cleanup_old_traces() -> None:
-    """清理 7 天前的 trace 文件。"""
+    """清理 7 天前的 trace 文件，并保留最新 40 个（防止单日多次运行撑爆目录）。"""
     cutoff = time.time() - 7 * 86400
+    MAX_TRACES_KEEP = 40
     trace_dir = TRACE_DIR
     if not trace_dir.exists():
         return
-    deleted = 0
-    for f in trace_dir.glob("trace_*.json"):
-        if f.stat().st_mtime < cutoff:
+    candidates = sorted(trace_dir.glob("trace_*.json"), key=lambda f: f.stat().st_mtime)
+    # 双条件都满足才删：超过 7 天，且不在最新 40 个名单内
+    stale = [
+        f
+        for f in candidates
+        if f.stat().st_mtime < cutoff and f not in candidates[-MAX_TRACES_KEEP:]
+    ]
+    for f in stale:
+        try:
             f.unlink()
-            deleted += 1
-    if deleted:
-        pass  # silent cleanup, no log to keep output clean
+        except OSError:
+            pass
 
 
 def _write_trace(

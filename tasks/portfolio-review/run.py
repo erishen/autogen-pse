@@ -84,8 +84,9 @@ def extract_review_from_trace(task: str) -> str | None:
     m = re.search(r"^##\s*🎯?\s*最终结论", last, re.MULTILINE)
     if m:
         result = last[m.start() :].strip()
-        # 截断后续无关章节（最终结论章节内不含 --- 分隔线，遇到即截断）
-        result = re.split(r"\n---\n+", result, maxsplit=1)[0].strip()
+        # 注意：绝不按 \n---\n 截断正文。Specialist 常在「市场回顾」与「关键发现」等
+        # 章节之间用标准 markdown 分隔线，按第一个 --- 截断会把完整报告砍到几百字符，
+        # 被 pse-review 的 validateReview 误判成「模型抽风」。整条 Specialist 回答即为报告。
         parts = files[0].stem.split("_")
         ts = f"{parts[1][:4]}-{parts[1][4:6]}-{parts[1][6:]} {parts[2][:2]}:{parts[2][2:4]}:{parts[2][4:]}"
         return f"# 投资组合诊断 — 最终结论\n\n{result}\n\n---\n*报告生成时间: {ts}*"
@@ -103,15 +104,11 @@ def extract_review_from_trace(task: str) -> str | None:
     ]:
         pos = last.find(marker)  # 用 find 而非 rfind，取最早出现位置
         if pos >= 0:
-            result = last[pos:].strip()
-            result = re.split(r"\n---\n+", result, maxsplit=1)[0].strip()
-            return f"# 投资组合诊断 — 最终结论\n\n{result}\n\n---\n*报告生成时间: {ts}*"
+            return f"# 投资组合诊断 — 最终结论\n\n{last[pos:].strip()}\n\n---\n*报告生成时间: {ts}*"
     # 兜底：取全文（去掉开头的分析过程，寻找第一个 ### 标题）
     first_heading = re.search(r"^###\s+", last, re.MULTILINE)
     if first_heading:
-        result = last[first_heading.start():].strip()
-        result = re.split(r"\n---\n+", result, maxsplit=1)[0].strip()
-        return f"# 投资组合诊断 — 最终结论\n\n{result}\n\n---\n*报告生成时间: {ts}*"
+        return f"# 投资组合诊断 — 最终结论\n\n{last[first_heading.start():].strip()}\n\n---\n*报告生成时间: {ts}*"
     # 最终兜底：取最后 30%
     cutoff = len(last) * 7 // 10
     return f"# 投资组合诊断 — 最终结论\n\n{last[cutoff:].strip()}"
