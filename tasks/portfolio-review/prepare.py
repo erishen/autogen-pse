@@ -43,10 +43,38 @@ def _latest_output_file(suffix: str) -> Path:
     )
 
 
+def asset_lens_env() -> dict:
+    """给 asset-lens 子进程的环境：把 uv venv 隔离到它自己的目录，避免继承
+    autogen-pse 的 UV_PROJECT_ENVIRONMENT（容器内被 PSE_UV_VENV_ROOT 重定向）。
+    否则 asset-lens 的 `uv run --no-sync` 会用 autogen 的 venv，缺 pandas 等依赖。
+    容器（PSE_UV_VENV_ROOT 已设）指向 $PSE_UV_VENV_ROOT/asset-lens，并确保已同步；
+    本地指向项目自身的 .venv，行为不变。"""
+    env = dict(os.environ)
+    venv_root = os.getenv("PSE_UV_VENV_ROOT")
+    if venv_root:
+        project_venv = str(Path(venv_root) / "asset-lens")
+        env["UV_PROJECT_ENVIRONMENT"] = project_venv
+        if not (Path(project_venv) / "pyvenv.cfg").exists():
+            print("🔄 首次为 asset-lens 构建容器私有 venv（uv sync）…", flush=True)
+            subprocess.run(
+                ["uv", "sync"],
+                cwd=str(ASSET_LENS),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=True,
+            )
+    else:
+        env.pop("UV_PROJECT_ENVIRONMENT", None)
+    return env
+
+
 def load_json() -> dict:
     subprocess.run(
         ["make", "calculate"],
         cwd=str(ASSET_LENS),
+        env=asset_lens_env(),
         capture_output=True,
         text=True,
         timeout=120,
@@ -78,6 +106,7 @@ def refresh_asset_lens() -> None:
             subprocess.run(
                 ["make", target],
                 cwd=str(ASSET_LENS),
+                env=asset_lens_env(),
                 check=True,
                 capture_output=True,
                 text=True,
