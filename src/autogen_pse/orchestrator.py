@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from autogen_agentchat.base import TaskResult
-from autogen_agentchat.conditions import ExternalTermination, TextMentionTermination
+from autogen_agentchat.conditions import ExternalTermination, FunctionalTermination
 from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_core.models import LLMMessage, UserMessage
@@ -168,6 +168,49 @@ class _SafeModelClient(OpenAIChatCompletionClient):
                 yield result
 
 
+def _evaluator_verdict(messages) -> str | None:
+    """最近一次 Evaluator 的判决（PASS/PARTIAL/FAIL/BLOCKED），无则 None。"""
+    verdict: str | None = None
+    for msg in messages:
+        if not isinstance(msg, TextMessage) or msg.source != "Evaluator":
+            continue
+        content = msg.content
+        if re.search(r"\bBLOCKED\b", content):
+            verdict = "BLOCKED"
+        elif re.search(r"\bPASS\b", content):
+            verdict = "PASS"
+        elif re.search(r"\bPARTIAL\b", content):
+            verdict = "PARTIAL"
+        elif re.search(r"\bFAIL\b", content):
+            verdict = "FAIL"
+    return verdict
+
+
+def _delivery_confirmed(messages) -> bool:
+    """交付/BLOCKED 只在 Evaluator 判决之后才算数。
+
+    修复：Planner 第一轮规划时误抄 prompt 里的"交付完成"或"转 BLOCKED"
+    字样，曾导致流水线提前终止、Specialist 从未发言。这里要求：
+    - Planner 的"交付完成" → Evaluator 刚判 PASS
+    - Planner 的"BLOCKED"   → Evaluator 刚判 BLOCKED/FAIL
+    - Evaluator 自身说"交付完成"或"BLOCKED" → 始终有效
+    """
+    verdict = _evaluator_verdict(messages)
+    for msg in messages:
+        if not isinstance(msg, TextMessage):
+            continue
+        content = msg.content
+        if msg.source == "Evaluator":
+            if "交付完成" in content or re.search(r"\bBLOCKED\b", content):
+                return True
+        elif msg.source == "Planner":
+            if "交付完成" in content and verdict == "PASS":
+                return True
+            if re.search(r"\bBLOCKED\b", content) and verdict in ("BLOCKED", "FAIL"):
+                return True
+    return False
+
+
 def create_pse_team(
     model_client: Optional[OpenAIChatCompletionClient] = None,
     task: Optional[str] = None,
@@ -179,7 +222,7 @@ def create_pse_team(
     specialist = create_specialist(model_client, task)
     evaluator = create_evaluator(model_client, task)
 
-    text_term = TextMentionTermination("交付完成") | TextMentionTermination("BLOCKED")
+    text_term = FunctionalTermination(_delivery_confirmed)
     return RoundRobinGroupChat(
         participants=[planner, specialist, evaluator],
         termination_condition=text_term | ExternalTermination(),
@@ -207,20 +250,29 @@ _REASON_RE = re.compile(r"原因码\**\s*[：:]\s*(\w+)", re.IGNORECASE)
 
 
 def _detect_outcome(messages: list) -> tuple[str, str, str]:
-    """从消息列表中检测判决结果，返回 (outcome, reason_code, summary)"""
+    """从消息列表中检测判决结果，返回 (outcome, reason_code, summary)。
+
+    与 _delivery_confirmed 保持一致的时序约束：Planner 的"交付完成"/"BLOCKED"
+    只有紧随 Evaluator 对应判决之后才算有效，否则视为误抄（忽略）。
+    """
     last_text = ""
+    verdict = _evaluator_verdict(messages)
     for msg in reversed(messages):
         if isinstance(msg, TextMessage) and msg.source in ("Planner", "Evaluator"):
             content = msg.content
-            if "交付完成" in content:
-                return "PASS", "OK", content[:2000]
-            if "BLOCKED" in content:
-                return "BLOCKED", "UNKNOWN", content[:2000]
             if msg.source == "Evaluator":
+                if "交付完成" in content:
+                    return "PASS", "OK", content[:2000]
+                if re.search(r"\bBLOCKED\b", content):
+                    return "BLOCKED", "UNKNOWN", content[:2000]
                 for kw in ["PASS", "FAIL", "PARTIAL"]:
-                    if kw in content:
+                    if re.search(rf"\b{kw}\b", content):
                         m = _REASON_RE.search(content)
                         return kw, (m.group(1).upper() if m else kw), content[:2000]
+            elif "交付完成" in content and verdict == "PASS":
+                return "PASS", "OK", content[:2000]
+            elif re.search(r"\bBLOCKED\b", content) and verdict in ("BLOCKED", "FAIL"):
+                return "BLOCKED", "UNKNOWN", content[:2000]
             if not last_text:
                 last_text = content[:2000]
     return "TIMEOUT", "UNKNOWN", last_text

@@ -14,14 +14,40 @@ from src.autogen_pse.orchestrator import (
 
 
 class TestDetectOutcome:
-    def test_pass(self):
+    def test_planner_delivered_without_evaluator_pass_not_pass(self):
+        """Planner 单独说"交付完成"但没有 Evaluator PASS 判决 → 不应判 PASS。
+
+        回归测试：免费模型第一轮规划时误抄 prompt 的"交付完成"字样，
+        曾导致流水线提前终止、Specialist 从未发言。
+        """
         msgs = [TextMessage(content="交付完成", source="Planner")]
+        outcome, reason, _summary = _detect_outcome(msgs)
+        assert outcome != "PASS"
+
+    def test_planner_delivered_after_evaluator_pass(self):
+        """Planner 在 Evaluator 给出 PASS 判决后宣布"交付完成" → PASS。"""
+        msgs = [
+            TextMessage(content="## 判决: PASS\n**原因码**: OK", source="Evaluator"),
+            TextMessage(content="✅ 交付完成", source="Planner"),
+        ]
+        outcome, reason, _summary = _detect_outcome(msgs)
+        assert outcome == "PASS"
+        assert reason == "OK"
+
+    def test_evaluator_delivered(self):
+        """Evaluator 直接宣布"交付完成" → PASS。"""
+        msgs = [TextMessage(content="验证通过，交付完成", source="Evaluator")]
         outcome, reason, _summary = _detect_outcome(msgs)
         assert outcome == "PASS"
         assert reason == "OK"
 
     def test_blocked(self):
         msgs = [TextMessage(content="BLOCKED: 无法完成", source="Planner")]
+        outcome, reason, _summary = _detect_outcome(msgs)
+        assert outcome != "BLOCKED"  # 无 Evaluator BLOCKED 判决在先 → 误抄，忽略
+
+    def test_evaluator_blocked(self):
+        msgs = [TextMessage(content="## 判决: BLOCKED", source="Evaluator")]
         outcome, reason, _summary = _detect_outcome(msgs)
         assert outcome == "BLOCKED"
         assert reason == "UNKNOWN"
