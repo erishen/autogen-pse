@@ -821,20 +821,30 @@ def build_gold_trend() -> str:
             continue
         with open(f) as fp:
             data = list(csv.DictReader(fp))
-        if data:
-            rows.append(data[-1])
+        # 从尾部取最后一条有效行：某些周导出会在表尾多一个全空行，
+        # data[-1] 会拿到空行而漏掉当周真实数据。
+        for r in reversed(data):
+            if (r.get("日期") or "").strip():
+                rows.append(r)
+                break
     if len(rows) < 2:
         return ""
 
     gl = []
     for r in rows:
         try:
+            # 快照末行可能是残缺行（日期/GLD 均为空），
+            # 必须先做行级校验：空日期或 GLD<=0 的行直接跳过，
+            # 否则 ("", 0) 元组会被 gl.sort() 排到最前，令下方 8 周涨跌幅除零。
+            d = (r.get("日期") or "").strip()
             gld = float(r.get(GOLD_GLD_COL, "0") or "0")
             gold = float(r.get(GOLD_DOMESTIC_COL, "0") or "0")
             ex_g = float(r.get(GOLD_EXCHANGE_COL, "0") or "0")
-            gl.append((r["日期"], gld, gold, ex_g))
         except (ValueError, KeyError):
             continue
+        if not d or gld <= 0:
+            continue
+        gl.append((d, gld, gold, ex_g))
     gl.sort()
 
     if len(gl) < 2:
@@ -855,8 +865,12 @@ def build_gold_trend() -> str:
     curr = gl[-1]
     peak_8w = max(g[1] for g in gl)
     trough_8w = min(g[1] for g in gl)
-    chg_8w = (curr[1] - gl[0][1]) / gl[0][1] * 100
-    chg_4w = (curr[1] - gl[-5][1]) / gl[-5][1] * 100 if len(gl) >= 5 else 0
+    chg_8w = (curr[1] - gl[0][1]) / gl[0][1] * 100 if gl[0][1] else 0
+    chg_4w = (
+        (curr[1] - gl[-5][1]) / gl[-5][1] * 100
+        if len(gl) >= 5 and gl[-5][1]
+        else 0
+    )
 
     lines.append("")
     lines.append(f"- 近 4 周变化: **{chg_4w:+.1f}%**")
@@ -882,8 +896,13 @@ def build_property_trend() -> str:
             continue
         with open(f) as fp:
             data = list(csv.DictReader(fp))
-        if data:
-            all_rows.append(data[-1])
+        # 从尾部取最后一条有效行（同 build_gold_trend）：表尾全空行会让
+        # data[-1] 变成 ("", 0, …)，经 sort() 排到最前导致 8 周涨跌幅除零，
+        # 且会漏掉当周真实数据。
+        for r in reversed(data):
+            if (r.get("日期") or "").strip():
+                all_rows.append(r)
+                break
     if len(all_rows) < 2:
         return ""
 
@@ -966,7 +985,7 @@ def build_property_trend() -> str:
         extra.append(f"在售: {cur[4]} 套（周 {cur[4] - prev[4]:+d}）")
     if extra:
         lines.append("- " + " | ".join(extra))
-    val_8w = (cur[1] - first[1]) / first[1] * 100
+    val_8w = (cur[1] - first[1]) / first[1] * 100 if first[1] else 0
     lines.append(f"- 8 周价值变化: **{val_8w:+.1f}%**")
 
     # 周边区域
