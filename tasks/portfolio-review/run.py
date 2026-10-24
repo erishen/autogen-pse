@@ -199,7 +199,20 @@ async def main():
         print("ℹ️ 未配置 KNOWLEDGE_BASE_PATH，跳过知识库检索")
 
     team = create_pse_team(task="portfolio-review")
-    result, report = await run_task(team, task, verbose=True)
+    # 上游流损坏兜底重试：网关流式 failover 的极端情况下仍可能给客户端残留
+    # 半行 SSE 帧，openai SDK 解析挂 JSONDecodeError 直接崩掉整轮
+    # （2026-10-24 实况：deepseek 分支因此 exit 1，连 trace 都没留下）。
+    # tsm-hub 侧已修复流截断处理（补 [DONE] + 丢残行），这里仅防其他上游
+    # 损坏形态；最多重试 1 次，其他异常原样抛出。
+    result = report = None
+    for attempt_no in (1, 2):
+        try:
+            result, report = await run_task(team, task, verbose=True)
+            break
+        except json.JSONDecodeError as e:
+            if attempt_no == 2:
+                raise
+            print(f"⚠️ 上游返回损坏的 JSON 流（{e}），重试一次（第 {attempt_no}/2 次尝试）...")
     print(report.summary())
 
     # 从 trace 提取并保存 review 文件（按模型分目录，避免不同模型输出互相覆盖）

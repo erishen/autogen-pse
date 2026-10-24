@@ -2,10 +2,18 @@
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ROOT = Path(__file__).parent.parent.parent
+
+# 将 .env 导出到 os.environ（override=False：真实环境变量优先）。
+# pydantic-settings 只把 .env 读进 Settings 模型、不写 os.environ，而 tools.py
+# 的 RAG 开关（RAG_STORE / RAG_SOURCE_DIRS / RAG_EXCLUDE_PATTERNS 等）走
+# os.getenv。缺此桥接时 .env 里配置的隐私过滤会静默失效——
+# 2026-10-24 隐私审计发现并修复（full 域成默认后该过滤是隐私红线，必须真生效）。
+load_dotenv(ROOT / ".env", override=False)
 
 
 class Settings(BaseSettings):

@@ -9,8 +9,14 @@ dependencies = [
     "autogen-ext[openai]>=0.4.0",
     "faiss-cpu>=1.14.3",
     "fastapi>=0.100",
+    # RAG 知识库（portfolio-review 的 retrieve_knowledge 经 sys.path 引入
+    # invest-kit/apps/langchain-llm-toolkit，其 rag.py 硬依赖以下包）。
+    # 放默认依赖而非 optional extra：容器 uv run 每次 sync 只装默认依赖，
+    # 放 extra 里会静默缺失 → "无法导入 langchain_llm_toolkit.rag" 退化。
+    "langchain-community>=0.3.0",
     "langchain-openai>=1.3.3",
     "langchain-qdrant>=1.1.0",
+    "langchain-text-splitters>=0.3.0",
     "markdown>=3.0",
     "ollama>=0.6.2",
     "pydantic-settings>=2.0",
@@ -25,16 +31,13 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
-knowledge = [
-    "langchain-community>=0.3.0",
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.uv]
-dev-dependencies = [
-    "pytest>=8.0",
-    "ruff>=0.5",
-]
