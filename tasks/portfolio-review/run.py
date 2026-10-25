@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -188,7 +189,8 @@ async def main():
     data_date = extract_data_date(task)
 
     # 注入个人投资知识（可选）
-    if settings.has_knowledge_base:
+    inject_kb = os.getenv("PSE_INJECT_KB", "1") not in ("0", "false", "False", "")
+    if settings.has_knowledge_base and inject_kb:
         print("📚 正在检索个人投资知识库...")
         knowledge = retrieve_knowledge(settings.KNOWLEDGE_BASE_PATH)
         ctx = format_knowledge_context(knowledge)
@@ -196,7 +198,12 @@ async def main():
             task = f"{task}\n\n{ctx}"
             print("✅ 知识已注入分析上下文")
     else:
-        print("ℹ️ 未配置 KNOWLEDGE_BASE_PATH，跳过知识库检索")
+        reason = (
+            "PSE_INJECT_KB 关闭（免费路线压低开场 token）"
+            if (settings.has_knowledge_base and not inject_kb)
+            else "未配置 KNOWLEDGE_BASE_PATH"
+        )
+        print(f"ℹ️ 跳过知识库检索（{reason}）")
 
     team = create_pse_team(task="portfolio-review")
     # 上游流损坏兜底重试：网关流式 failover 的极端情况下仍可能给客户端残留
@@ -207,7 +214,10 @@ async def main():
     result = report = None
     for attempt_no in (1, 2):
         try:
-            result, report = await run_task(team, task, verbose=True)
+            # 默认关闭 verbose：避免把完整持仓消息打印到 stdout（容器日志若外发即泄露
+            # PII）。需要调试时设 PSE_VERBOSE=1 临时开启。
+            verbose = os.environ.get("PSE_VERBOSE", "") not in ("", "0", "false", "False")
+            result, report = await run_task(team, task, verbose=verbose)
             break
         except json.JSONDecodeError as e:
             if attempt_no == 2:

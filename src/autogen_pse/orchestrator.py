@@ -13,8 +13,9 @@ from autogen_agentchat.base import TaskResult
 from autogen_agentchat.conditions import ExternalTermination, FunctionalTermination
 from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.teams import RoundRobinGroupChat
-from autogen_core.models import LLMMessage, UserMessage
+from autogen_core.models import LLMMessage, UserMessage, SystemMessage, AssistantMessage
 from autogen_ext.models.openai import OpenAIChatCompletionClient
+from openai import APIStatusError
 
 from .agents import (
     create_evaluator,
@@ -25,6 +26,64 @@ from .config import settings
 from .tools import AgentTokenStats, TokenReport, TokenTracker
 
 logger = logging.getLogger(__name__)
+
+
+def _is_413(e: Exception) -> bool:
+    """判断是否为「请求过大」类限流（免费网关 Groq qwen ITPM=7000 的典型错误）。
+
+    表现为 openai.APIStatusError: 413 或 rate_limit_exceeded 且消息含
+    "Requested N tokens"（与 429 配额限流区分开，后者不该触发压缩重试）。
+    """
+    if getattr(e, "status_code", None) == 413:
+        return True
+    msg = str(e)
+    return "Requested" in msg and "tokens" in msg and "rate_limit" in msg.lower()
+
+
+def _truncate(msg: LLMMessage, max_chars: int) -> LLMMessage:
+    """对超长消息做硬截断（保留头部），用于 413 自愈时压低上下文。"""
+    content = getattr(msg, "content", None)
+    if isinstance(content, str) and len(content) > max_chars:
+        return UserMessage(
+            content=(
+                content[:max_chars]
+                + f"\n…(上下文已截断以适配免费模型 7000 token 上限，"
+                f"完整内容请从你已读取的文件获取)"
+            ),
+            source=msg.source,
+        )
+    return msg
+
+
+def _compress_messages(messages: Sequence[LLMMessage]) -> list:
+    """413 自愈上下文压缩（仅在命中 413 时调用，正常规模不触达）。
+
+    免费网关 Groq qwen 的 ITPM=7000，而 PSE 顺序多智能体后期阶段（尤指
+    Evaluator）上下文会累积到 ~9000+ token。Evaluator 通过 read_file 工具读取
+    原始数据/报告来核验，**不依赖对话历史里的臃肿上下文**——所以这里可激进压缩：
+    仅保留「系统提示 + 截断后的首条任务(指令头) + 截断后的最后一条消息(触发轮)」，
+    把输入压到 ~4000 token 以下，同时不破坏 Evaluator 的核验能力（它靠工具重读）。
+    """
+    system = [m for m in messages if isinstance(m, SystemMessage)]
+    rest = [m for m in messages if not isinstance(m, SystemMessage)]
+    if len(rest) <= 1:
+        return list(messages)
+    first_user: UserMessage | None = None
+    tail: list = []
+    for m in rest:
+        if first_user is None and isinstance(m, UserMessage):
+            first_user = m
+        else:
+            tail.append(m)
+    kept: list = list(system)
+    # 任务指令头（~1500 字符≈750 token）足够让角色理解任务；原始数据由工具读取
+    if first_user is not None:
+        kept.append(_truncate(first_user, 1500))
+    # 最后一条消息（触发本轮的角色输出/请求）截断到 ~2500 字符≈1250 token
+    if tail:
+        kept.append(_truncate(tail[-1], 2500))
+    return kept
+
 
 # ── 循环控制参数 ──
 MAX_PARTIAL_RETRIES = int(os.getenv("PSE_MAX_PARTIAL_RETRIES", "3"))
@@ -124,7 +183,17 @@ class _SafeModelClient(OpenAIChatCompletionClient):
 
     async def create(self, messages, **kwargs):
         sanitized = self._sanitize_messages(messages)
-        result = await self._inner.create(sanitized, **kwargs)
+        try:
+            result = await self._inner.create(sanitized, **kwargs)
+        except APIStatusError as e:
+            # 免费网关（Groq qwen，ITPM=7000）在 PSE 后期阶段（Evaluator）因上下文
+            # 累积超限而 413。这里做一次自愈：压缩历史后重试一次。前期阶段上下文小，
+            # 不会命中此分支；非 413 的 API 错误原样抛出。
+            if _is_413(e):
+                logger.warning("413 上下文超限，压缩历史后重试一次（Evaluator 阶段）")
+                result = await self._inner.create(_compress_messages(sanitized), **kwargs)
+            else:
+                raise
 
         if not self._has_real_content(result):
             if result.thought and result.thought.strip():
@@ -302,20 +371,46 @@ async def _run_one_cycle(
 ) -> CycleResult:
     tracker = TokenTracker()
     messages = []
+    aborted: Exception | None = None
 
-    async for msg in team.run_stream(task=task):
-        tracker.feed(msg)
-        if isinstance(msg, TaskResult):
-            continue
-        messages.append(msg)
-        if verbose:
-            _print_message(msg)
+    try:
+        async for msg in team.run_stream(task=task):
+            tracker.feed(msg)
+            if isinstance(msg, TaskResult):
+                continue
+            messages.append(msg)
+            if verbose:
+                _print_message(msg)
+    except Exception as e:  # 团队运行抛错（如 deepseek 流式网关侧损坏、免费模型 413 自愈后仍超限）
+        aborted = e
+        logger.error(
+            "团队运行异常（已收集 %d 条历史消息用于降级恢复）: %s",
+            len(messages),
+            e,
+        )
+
+    # 统一把原始消息转为可序列化 dict。无论是否正常交付都保证 trace 能落盘，
+    # 否则异常降级分支若直接塞原始 TextMessage 对象，_write_trace 的 json.dumps
+    # 会抛 "Object of type TextMessage is not JSON serializable"（deepseek 流式
+    # 网关侧崩时必现）。
+    chat_log = [
+        {"source": m.source, "content": m.content}
+        for m in messages
+        if isinstance(m, TextMessage)
+    ]
+
+    if aborted is not None:
+        # 降级：即便未正常交付，也把已产出的 Specialist 报告提取出来，避免整轮崩溃
+        # 导致 trace 不落盘、报告丢失。run_task 会据此写出 trace 并提取 review。
+        return CycleResult(
+            outcome="TIMEOUT",
+            summary=f"团队运行异常降级: {aborted}",
+            report=tracker.report,
+            messages=chat_log,
+            reason="ABORTED",
+        )
 
     outcome, reason, summary = _detect_outcome(messages)
-    chat_log = []
-    for m in messages:
-        if isinstance(m, TextMessage):
-            chat_log.append({"source": m.source, "content": m.content})
     return CycleResult(outcome, summary, tracker.report, chat_log, reason=reason)
 
 
