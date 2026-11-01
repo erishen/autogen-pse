@@ -1104,6 +1104,126 @@ def build_c_class_alert(products: list) -> str:
 # ── 主入口 ──
 
 
+def build_fed_autofetch_section() -> str:
+    """asset-lens market_env.json 的 Fed 自动抓取指标（若存在）。
+
+    该指标由 asset-lens `make analyze` 自动从 FRED 抓取（议息会议后更新），
+    比 CSV 手工列「美联基利率」新。注入 prompt 时声明：两源冲突以自动抓取为准
+    （人工注记仍最优先——注记可能刚记录了一次自动抓取尚未反映的最新议息）。
+    读不到文件/指标时静默跳过，不中断周报生成。
+    """
+    try:
+        path = ASSET_LENS / "asset_lens" / "data" / "market_env.json"
+        with open(path, encoding="utf-8") as f:
+            env = json.load(f)
+        ind = env.get("indicators", {}).get("fed_funds_rate")
+        if not ind or not ind.get("auto"):
+            return ""
+        val = ind.get("value")
+        if val is None:
+            return ""
+        updated = env.get("updated_at", "unknown")
+        return f"""## 联邦基金利率（自动抓取，优先于 CSV 手工列）
+
+- FRED FF 目标利率：**{val}%**（asset-lens 自动抓取，数据更新于 {updated}）
+- 上方 CSV 快照的「美联基利率」为手工周更列，若与本值不一致，**以本自动值为准**
+  判断利率环境（CSV 列在议息周滞后是已知现象）。
+- 若「人工市场注记」记录了更新的议息结果（如本次会议刚加息），以注记为最终依据。
+"""
+    except Exception:
+        return ""
+
+
+def load_market_notes(current_date: str) -> str:
+    """人工市场注记：market-notes.md 的生效段注入 prompt（已过期的段自动剔除）。
+
+    通道定位（重要——防止陈旧数字「压制」新快照）：
+    - 注记通道只承载 **CSV 没有的外生宏观事件**（美联储议息、政策、市场异动）；
+    - **组合数字（总资产/盈亏/个券持仓）永远以 CSV 快照为准**——写进注记会在
+      快照更新后变成陈旧值，反而误导模型，故注记里不应出现这类条目；
+    - 段标题可带「（expires=YYYY-MM-DD）」，数据日期 ≥ 过期日时该段整段剔除。
+
+    首段 `## ` 之前的说明性文字（usage）与 HTML 注释不注入。
+    """
+    p = BASE / "market-notes.md"
+    if not p.exists():
+        return ""
+    text = p.read_text(encoding="utf-8").strip()
+    if not text:
+        return ""
+    cur = current_date.replace("-", "")
+    kept = []
+    for sec in re.split(r"(?m)^## ", text)[1:]:
+        head = sec.splitlines()[0] if sec.splitlines() else ""
+        m = re.search(r"expires=(\d{4}-?\d{2}-?\d{2})", head)
+        if m and cur >= m.group(1).replace("-", ""):
+            continue  # 过期段，不注入
+        if "历史" in head or "不注入" in head:
+            continue  # 显式留档段
+        kept.append(re.sub(r"<!--.*?-->", "", sec, flags=re.S).rstrip())
+    kept = [k for k in kept if k.strip()]
+    if not kept:
+        return ""
+    body = "\n## ".join(["## "] + kept)
+    return f"""## 人工市场注记（仅外生宏观事件；该范围内优先于 CSV 市场段）
+
+以下注记由持有人手工记录。适用范围与规则：
+- 适用**外生宏观事件**（美联储议息、政策、市场异动）：该范围内与 CSV 数据冲突时，
+  以注记为准，并在报告中说明对应 CSV 列滞后；
+- **组合数字（总资产、盈亏、个券持仓）永远以 CSV 快照为准**，不以注记中出现过的
+  任何数字为准——注记通道不接受此类条目。
+
+{body}
+"""
+
+
+def find_prior_report(current_date: str):
+    """找当前数据日期之前的最新一期周报（跨 provider 目录），返回 (path, date) 或 None。"""
+    cands = []
+    for f in (BASE / "output").glob("*/weekly_review_*.md"):
+        m = re.search(r"weekly_review_(\d{8})", f.name)
+        if m and m.group(1) < current_date:
+            cands.append((m.group(1), f))
+    if not cands:
+        return None
+    d, f = max(cands)
+    return f, d
+
+
+def build_prior_review_section(current_date: str) -> tuple[str, str]:
+    """上期建议跟踪：注入上期「建议操作」清单 + 逐条回应要求，防止每期重复空转。
+
+    返回 (小节文本, 任务追加项)；无上期报告时两者为空串。
+    """
+    prior = find_prior_report(current_date)
+    if not prior:
+        return "", ""
+    path, pdate = prior
+    try:
+        text = path.read_text(encoding="utf-8")
+        m = re.search(r"### 建议操作.*?\n(.*?)(?=\n### |\n## |$)", text, re.S)
+        sugg = (m.group(1).strip()[:4000] if m else "").strip()
+    except Exception:
+        sugg = ""
+    sugg_block = sugg or "（未能自动提取建议清单，请读取全文自行核对）"
+    section = f"""## 上期建议跟踪（必须逐条回应）
+
+上期周报（数据截止 {pdate[:4]}年{pdate[4:6]}月{pdate[6:8]}日，{path}）的建议操作清单如下。
+本期若重新提出与上期相同的建议，必须在条目末尾注明「(上期已建议)」，并说明：
+- 上期为何未执行（等待的信号是否已成立 / 未成立 / 持有人未操作）；
+- 本期是否应升级优先级、缩小范围或放弃。
+连续 2 期出现且仍未执行的建议，默认降级为「观察项」而非「待办项」，除非出现新的触发信号。
+
+上期建议（节选）：
+{sugg_block}
+"""
+    task_item = (
+        "4. **上期建议跟踪**：对「上期建议跟踪」小节逐条给出 已执行/未执行(原因)/"
+        "继续观察/升级/放弃 的判定，重复且未执行的条目标注「(上期已建议)」。\n"
+    )
+    return section, task_item
+
+
 def main():
     # 数据可能过期：先检查，过期则自动刷新 asset-lens（calculate/analyze/compare）再继续，
     # 确保后续 load_json 读到的是刷新后的最新快照。
@@ -1118,6 +1238,9 @@ def main():
     dca_review = build_dca_review(products)
     c_class_alert = build_c_class_alert(products)
     growth_details = build_growth_details(products)
+    market_notes = load_market_notes(data_date)
+    fed_section = build_fed_autofetch_section()
+    prior_section, prior_task = build_prior_review_section(data_date)
     snapshot_date = f"{data_date[:4]}年{data_date[4:6]}月{data_date[6:8]}日"
 
     md = f"""# 投资周报分析
@@ -1167,6 +1290,9 @@ def main():
 
 {market_context}
 
+{fed_section}
+{market_notes}
+{prior_section}
 ## 投资效率
 
 {build_efficiency(data)}
@@ -1184,6 +1310,7 @@ def main():
 1. **数据诊断**：基于快照数据，识别持仓中的结构问题（长期亏损、资金效率低、同类重复等）
 2. **风险警示**：指出需要关注的风险点，标注数据截止日期
 3. **调仓建议**：针对结构性问题提出具体操作建议，不预测市场方向
+{prior_task}
 """
     out = BASE / "output/portfolio_review_prompt.md"
     archive_dir = BASE / "output/archive"

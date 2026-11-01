@@ -16,6 +16,8 @@ __pycache__/
 tasks/demo/output/
 tasks/portfolio-review/output/
 outputs/
+# 人工市场注记（真实资产数字 / 策略反馈，私密）
+tasks/portfolio-review/market-notes.md
 
 # 前端
 web/dist/
