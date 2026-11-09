@@ -131,6 +131,8 @@ PASS → "交付完成"  ·  BLOCKED → 停止
 
 每个任务可额外声明自己的变量，写在 `meta.json` 的 `env_required` 中。例如 `portfolio-review` 需要 `ASSET_LENS_DIR`、`MONEY_CSV_DIR`、`MARKET_INDICES` 以及 `PSE_*` 检测阈值（共 10 项）。完整注释见 `.env.example`。
 
+**`PSE_REDACT_AMOUNTS=1`（隐私模式）**：只给模型「占组合百分比 + 规模档位」，不发绝对金额。`run.py` 会读 `output/portfolio_review_meta.json` 里的总额，把报告里模型自拟的金额替换为「金额已按比例隐去」，并在结尾给出一行「1 个百分点 ≈ ¥X」的本机换算基准。默认关闭。
+
 ## 技术栈
 
 - **AutoGen** (`RoundRobinGroupChat`) — Agent 编排
@@ -182,7 +184,7 @@ tasks/my-task/
 
 ## 许可证
 
-MIT
+MIT，见 [LICENSE](LICENSE)。
 
 ---
 
