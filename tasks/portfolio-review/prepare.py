@@ -29,6 +29,60 @@ if not _MARKET_INDICES:
     sys.exit("请先配置 .env 中的 MARKET_INDICES（逗号分隔的指数列名）")
 MARKET_INDICES = [name.strip() for name in _MARKET_INDICES.split(",")]
 
+# ── 金额脱敏（隐私模式）──
+# PSE_REDACT_AMOUNTS=1 时，提示词里所有绝对金额都换成「占组合百分比」，
+# 组合规模只以档位出现；报告中的真实金额由 run.py 用 output/portfolio_review_meta.json 回填。
+REDACT_AMOUNTS = os.getenv("PSE_REDACT_AMOUNTS", "").strip().lower() in {"1", "true", "yes", "on"}
+_TOTAL_ASSETS = 0.0
+
+
+def size_tier(total: float) -> str:
+    if total <= 0:
+        return "未知"
+    for cap, label in (
+        (100_000, "10万以下"),
+        (500_000, "10-50万"),
+        (2_000_000, "50-200万"),
+        (float("inf"), "200万以上"),
+    ):
+        if total < cap:
+            return label
+    return "未知"
+
+
+def pct_of_total(value, total: float = None) -> str:
+    t = total if total is not None else _TOTAL_ASSETS
+    if not t:
+        return "—"
+    return f"{float(value) / t * 100:.1f}%"
+
+
+def amount(value, total: float = None) -> str:
+    """金额文本。脱敏模式返回占组合百分比，否则返回 ¥X 万/元。"""
+    if REDACT_AMOUNTS:
+        return pct_of_total(value, total)
+    v = float(value)
+    return f"¥{v / 10000:.1f}万" if v >= 10000 else f"¥{v:.0f}"
+
+
+def paren_amount(value, total: float = None) -> str:
+    """「（¥X万）」片段；脱敏模式下为空，避免和同行的百分比重复。"""
+    if REDACT_AMOUNTS:
+        return ""
+    return f"（{amount(value, total)}）"
+
+_CURRENCY_RE = re.compile(r"¥\s*[\d,]+(?:\.\d+)?\s*万?|[\d,]+(?:\.\d+)?\s*万元")
+
+
+def scrub_amounts(text: str) -> str:
+    """把任意文本里的货币金额抹掉（用于上一期复盘、市场笔记等外部来源）。"""
+    if not text:
+        return text
+    return _CURRENCY_RE.sub("［金额已隐去］", text)
+
+
+
+
 
 # ── 数据加载 ──
 
@@ -188,17 +242,27 @@ def build_overview(data: dict) -> str:
     def g(k):
         return _get_val(ev, k)
 
-    return "\n".join(
-        [
-            f"- 当前总资产: {float(g('total_current_amount')) / 10000:.2f}万元",
+    total = float(g("total_current_amount"))
+    if REDACT_AMOUNTS:
+        rows = [
+            f"- 组合规模档位: {size_tier(total)}（金额已脱敏，仅提供比例）",
+            f"- 总投入: 占当前组合 {pct_of_total(g('total_investment'), total)}",
+            f"- 已实现收益: +{pct_of_total(g('realized_profit'), total)}（占组合）",
+            f"- 未实现收益: +{pct_of_total(g('unrealized_profit'), total)}（占组合）",
+        ]
+    else:
+        rows = [
+            f"- 当前总资产: {total / 10000:.2f}万元",
             f"- 总投入: {float(g('total_investment')) / 10000:.2f}万元",
             f"- 已实现收益: +{float(g('realized_profit')) / 10000:.2f}万元",
             f"- 未实现收益: +{float(g('unrealized_profit')) / 10000:.2f}万元",
-            f"- 整体收益率: {g('overall_return_rate')}",
-            f"- 加权年化收益率: {g('weighted_annual_return')}",
-            f"- 时间加权年化: {g('time_weighted_return')}",
         ]
-    )
+    rows += [
+        f"- 整体收益率: {g('overall_return_rate')}",
+        f"- 加权年化收益率: {g('weighted_annual_return')}",
+        f"- 时间加权年化: {g('time_weighted_return')}",
+    ]
+    return "\n".join(rows)
 
 
 def build_allocation(data: dict, products: list = None) -> str:
@@ -246,10 +310,7 @@ def build_allocation(data: dict, products: list = None) -> str:
     for _name, info in sorted_items:
         pct = info["percentage"]
         amt = info["total_value"]
-        if amt >= 10000:
-            lines.append(f"  {_name}: {pct}（{amt / 10000:.1f}万元）")
-        else:
-            lines.append(f"  {_name}: {pct}（{amt:.0f}元）")
+        lines.append(f"  {_name}: {pct}{paren_amount(amt)}")
     return "\n".join(lines)
 
 
@@ -315,10 +376,10 @@ def build_role_breakdown(data: dict, products: list) -> str:
 
     # ── 形式视角（原始四行，保留不变）──
     formal_lines = (
-        f"  增长引擎: {growth_pct:.2f}%（{growth_amt / 10000:.1f}万元）\n"
-        f"  防御底仓: {defense_pct:.2f}%（{defense_amt / 10000:.1f}万元）\n"
-        f"  流动性储备: {liquid_pct:.2f}%（{liquid_amt / 10000:.1f}万元）\n"
-        f"  黄金: {gold_pct:.2f}%（{gold_amt / 10000:.1f}万元）"
+        f"  增长引擎: {growth_pct:.2f}%{paren_amount(growth_amt)}\n"
+        f"  防御底仓: {defense_pct:.2f}%{paren_amount(defense_amt)}\n"
+        f"  流动性储备: {liquid_pct:.2f}%{paren_amount(liquid_amt)}\n"
+        f"  黄金: {gold_pct:.2f}%{paren_amount(gold_amt)}"
     )
 
     # ── 功能视角：将 DEFENSIVE_LIQUID_TYPES 从流动性移入防御 ──
@@ -345,10 +406,10 @@ def build_role_breakdown(data: dict, products: list) -> str:
         dl_display = "、".join(sorted(dl_names))
         func_lines = (
             f"\n\n  ▶ 功能视角（{dl_display}视为防御）：\n"
-            f"    增长引擎: {growth_pct:.2f}%（{growth_amt / 10000:.1f}万元）\n"
-            f"    防御（含低波理财）: {func_defense_pct:.2f}%（{func_defense_amt / 10000:.1f}万元）\n"
-            f"    纯流动性: {func_liquid_pct:.2f}%（{func_liquid_amt / 10000:.1f}万元）\n"
-            f"    黄金: {gold_pct:.2f}%（{gold_amt / 10000:.1f}万元）\n"
+            f"    增长引擎: {growth_pct:.2f}%{paren_amount(growth_amt)}\n"
+            f"    防御（含低波理财）: {func_defense_pct:.2f}%{paren_amount(func_defense_amt)}\n"
+            f"    纯流动性: {func_liquid_pct:.2f}%{paren_amount(func_liquid_amt)}\n"
+            f"    黄金: {gold_pct:.2f}%{paren_amount(gold_amt)}\n"
             f"    ⚠️ {dl_display}为低波固收产品（90+天持有期，本金安全），功能上等价防御底仓。\n"
             f"    分析配置比例是否合理时，必须以功能视角为准；形式视角仅供合规参考。"
         )
@@ -363,7 +424,8 @@ def build_growth_details(products: list) -> str:
     skip_keywords = set(os.getenv("GROWTH_SKIP_KEYWORDS", "").split(",")) if os.getenv("GROWTH_SKIP_KEYWORDS") else set()
     skip_platforms = set(os.getenv("GROWTH_SKIP_PLATFORMS", "").split(",")) if os.getenv("GROWTH_SKIP_PLATFORMS") else set()
     usd_rate, hkd_rate = _get_exchange_rates()
-    lines = ["| 名称 | 平台 | 金额 | 天数 | 实亏 | 年化 |", "|------|------|:---:|:---:|:---:|:---:|"]
+    amt_col = "占组合" if REDACT_AMOUNTS else "金额"
+    lines = [f"| 名称 | 平台 | {amt_col} | 天数 | 实亏 | 年化 |", "|------|------|:---:|:---:|:---:|:---:|"]
     for r in products:
         typ = r.get("类型", "")
         if typ not in growth_types:
@@ -392,7 +454,7 @@ def build_growth_details(products: list) -> str:
         except (ValueError, TypeError):
             continue
         lines.append(
-            f"| {name} | {plat} | ¥{amt/10000:.2f}万 | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
+            f"| {name} | {plat} | {amount(amt)} | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
         )
     return "\n".join(lines) if len(lines) > 2 else ""
 
@@ -406,7 +468,8 @@ def build_gold_details(products: list) -> str:
     """
     gold_types = set(os.getenv("GOLD_TYPES", "黄金").split(","))
     gold_keywords = set(os.getenv("GOLD_KEYWORDS", "黄金,gold").split(","))
-    lines = ["| 名称 | 平台 | 金额 | 天数 | 实亏 | 年化 |", "|------|------|:---:|:---:|:---:|:---:|"]
+    amt_col = "占组合" if REDACT_AMOUNTS else "金额"
+    lines = [f"| 名称 | 平台 | {amt_col} | 天数 | 实亏 | 年化 |", "|------|------|:---:|:---:|:---:|:---:|"]
     total = 0.0
     for r in products:
         typ = r.get("类型", "")
@@ -426,11 +489,11 @@ def build_gold_details(products: list) -> str:
         except (ValueError, TypeError):
             continue
         lines.append(
-            f"| {name[:22]} | {plat} | ¥{amt/10000:.2f}万 | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
+            f"| {name[:22]} | {plat} | {amount(amt)} | {days}天 | {real_val:+.1f}% | {ann:+.0f}% |"
         )
     if len(lines) <= 2:
         return ""
-    lines.append(f"| **合计** | | **¥{total/10000:.2f}万** | | | |")
+    lines.append(f"| **合计** | | **{pct_of_total(total) if REDACT_AMOUNTS else f'¥{total/10000:.2f}万'}** | | | |")
     return "\n".join(lines)
 
 
@@ -444,9 +507,7 @@ def build_risk(data: dict) -> str:
     lines = []
     for level, info in sorted_items:
         amt = float(info.get("total_value", 0))
-        lines.append(
-            f"  {level}: {info.get('percentage', '?')}（¥{amt / 10000:.1f}万）"
-        )
+        lines.append(f"  {level}: {info.get('percentage', '?')}{paren_amount(amt)}")
     return "\n".join(lines)
 
 
@@ -531,14 +592,14 @@ def detect_issues(products: list) -> str:
             continue
 
         if days > LONG_LOSS_DAYS and real_val < 0:
-            line = f"- ¥{amt / 10000:.1f}万 | {name[:20]} | {days}天 | {real_val:+.2f}%"
+            line = f"- {amount(amt)} | {name[:20]} | {days}天 | {real_val:+.2f}%"
             loss.append((amt, line))
         if (
             days > LOW_EFF_DAYS
             and 0 <= ann < LOW_EFF_MAX_RETURN
             and amt > LOW_EFF_MIN_AMOUNT
         ):
-            line = f"- ¥{amt / 10000:.1f}万 | {name[:20]} | {plat} | {days}天 | 年化{ann:.1f}%"
+            line = f"- {amount(amt)} | {name[:20]} | {plat} | {days}天 | 年化{ann:.1f}%"
             low_eff.append((amt, typ, line))
         if (
             ann > HIGH_VOL_MIN_RETURN
@@ -546,7 +607,7 @@ def detect_issues(products: list) -> str:
             and amt > HIGH_VOL_MIN_AMOUNT
         ):
             line = (
-                f"- ¥{amt / 10000:.2f}万 | {name[:20]} | 年化{ann:.0f}%（仅{days}天）"
+                f"- {amount(amt)} | {name[:20]} | 年化{ann:.0f}%（仅{days}天）"
             )
             volatile.append((amt, line))
         if (
@@ -554,10 +615,10 @@ def detect_issues(products: list) -> str:
             and typ in LARGE_POS_TYPES
             and ann < LARGE_POS_MAX_RETURN
         ):
-            line = f"- ¥{amt / 10000:.0f}万 | {name[:20]} | {typ} | 年化{ann:.1f}%"
+            line = f"- {amount(amt)} | {name[:20]} | {typ} | 年化{ann:.1f}%"
             big_fixed.append((amt, typ, line))
         if real_val < CUR_LOSS_THRESHOLD and amt > CUR_LOSS_MIN_AMOUNT:
-            line = f"- ¥{amt / 10000:.1f}万 | {name[:22]} | {plat} | {typ} | {days}天 | 实亏{real_val:+.1f}%（年化{ann:+.0f}%）"
+            line = f"- {amount(amt)} | {name[:22]} | {plat} | {typ} | {days}天 | 实亏{real_val:+.1f}%（年化{ann:+.0f}%）"
             cur_loss.append((real_val, line))
 
     # 平台集中度
@@ -570,7 +631,7 @@ def detect_issues(products: list) -> str:
             pass
     total_amt = sum(pt.values()) or 1
     plat_risk = [
-        f"- {p}：¥{a / 10000:.0f}万（{a / total_amt * 100:.0f}%）"
+        f"- {p}：{pct_of_total(a, total_amt) if REDACT_AMOUNTS else f"¥{a / 10000:.0f}万"}（{a / total_amt * 100:.0f}%）"
         for p, a in sorted(pt.items(), key=lambda x: -x[1])[:3]
     ]
 
@@ -614,8 +675,8 @@ def detect_issues(products: list) -> str:
         lst = sorted(name_map[w], key=lambda x: -x[1])
         total_kw = sum(a for _, a in lst)
         dupes.append(
-            f"- {w}（{len(lst)}只，¥{total_kw / 10000:.1f}万）："
-            + ", ".join(f"{n} ¥{a / 10000:.1f}万" for n, a in lst)
+            f"- {w}（{len(lst)}只，{amount(total_kw)}）："
+            + ", ".join(f"{n} {amount(a)}" for n, a in lst)
         )
 
     sections = []
@@ -651,7 +712,7 @@ def detect_issues(products: list) -> str:
             min_ret = min(annual_values) if annual_values else 0.0
             max_ret = max(annual_values) if annual_values else 0.0
             sections_parts.append(
-                f"- 💰 低效固收：¥{total_amt/10000:.0f}万（{len(fixed_income)}只，年化{min_ret:.1f}%-{max_ret:.1f}%），明细见原始数据"
+                f"- 💰 低效固收：{amount(total_amt)}（{len(fixed_income)}只，年化{min_ret:.1f}%-{max_ret:.1f}%），明细见原始数据"
             )
         # 其他产品逐只列出
         seen: dict = {}
@@ -693,7 +754,7 @@ def build_time_groups(data: dict) -> str:
         days_str = f"{int(float(days))}天" if days else "-"
         lines.append(
             f"| {g.get('name', '?')} | {g.get('count', 0)}只 | "
-            f"¥{amt / 10000:.1f}万 | {g.get('avg_return_rate', '?')} | {days_str} |"
+            f"{amount(amt)} | {g.get('avg_return_rate', '?')} | {days_str} |"
         )
     return "\n".join(lines)
 
@@ -970,17 +1031,17 @@ def build_property_trend() -> str:
     lines.append("### 核心住宅")
     parts = []
     if cur[1]:
-        parts.append(f"当前价值: **¥{cur[1]:.1f}万**")
+        parts.append("当前价值: **已隐藏**" if REDACT_AMOUNTS else f"当前价值: **¥{cur[1]:.1f}万**")
     if cur[2]:
-        parts.append(f"估价: ¥{cur[2]:.1f}万")
+        parts.append("估价: 已隐藏" if REDACT_AMOUNTS else f"估价: ¥{cur[2]:.1f}万")
     if PROP_CORE_DIFF:
-        parts.append(f"差价: ¥{cur[3]:.1f}万")
+        parts.append("差价: 已隐藏" if REDACT_AMOUNTS else f"差价: ¥{cur[3]:.1f}万")
     lines.append("- " + " | ".join(parts))
     extra = []
     if PROP_CORE_LISTING and cur[6]:
-        extra.append(f"挂牌: ¥{cur[6]:.0f}/m²")
+        extra.append("挂牌: 已隐藏" if REDACT_AMOUNTS else f"挂牌: ¥{cur[6]:.0f}/m²")
     if PROP_CORE_PRICE and cur[5]:
-        extra.append(f"成交: ¥{cur[5]:.0f}/m²")
+        extra.append("成交: 已隐藏" if REDACT_AMOUNTS else f"成交: ¥{cur[5]:.0f}/m²")
     if PROP_CORE_UNITS and cur[4]:
         extra.append(f"在售: {cur[4]} 套（周 {cur[4] - prev[4]:+d}）")
     if extra:
@@ -1069,7 +1130,7 @@ def build_dca_review(products: list) -> str:
     for name, amt, real_val, days, ann in dca_products:
         status = "✅" if real_val > 0 else "⚠️" if real_val > -5 else "🔴"
         lines.append(
-            f"- {status} {name[:25]} | ¥{amt:.0f} | {days}天 | 实{real_val:+.1f}% | 年化{ann:+.0f}%"
+            f"- {status} {name[:25]} | {amount(amt)} | {days}天 | 实{real_val:+.1f}% | 年化{ann:+.0f}%"
         )
     return "\n".join(lines)
 
@@ -1097,7 +1158,7 @@ def build_c_class_alert(products: list) -> str:
     alerts.sort(key=lambda x: -x[2])
     lines = ["## C类份额费率提醒", ""]
     for name, days, amt, extra in alerts:
-        lines.append(f"- {name[:25]} | {days}天 | ¥{amt:.0f} | 预估年多付 ¥{extra:.0f}")
+        lines.append(f"- {name[:25]} | {days}天 | {amount(amt)} | 预估年多付 {amount(extra)}")
     return "\n".join(lines)
 
 
@@ -1230,6 +1291,12 @@ def main():
     check_freshness(_latest_output_file(".json"))
     data = load_json()
     products = load_products()
+    # 脱敏模式下的百分比换算基准：组合总资产（只在本机用，不进提示词）
+    global _TOTAL_ASSETS
+    try:
+        _TOTAL_ASSETS = float(data.get("comprehensive_evaluation", {}).get("total_current_amount", 0) or 0)
+    except (TypeError, ValueError):
+        _TOTAL_ASSETS = 0.0
     data_date, market, prev_row, curr_row = get_market()
     gold_trend = build_gold_trend()
     market_context = build_market_context(prev_row, curr_row)
@@ -1241,12 +1308,30 @@ def main():
     market_notes = load_market_notes(data_date)
     fed_section = build_fed_autofetch_section()
     prior_section, prior_task = build_prior_review_section(data_date)
+    if REDACT_AMOUNTS:
+        # 上一期复盘是历史产物，里面带真实金额，脱敏模式下必须一起抹掉
+        prior_section = scrub_amounts(prior_section)
+        prior_task = scrub_amounts(prior_task)
+        market_notes = scrub_amounts(market_notes)
     snapshot_date = f"{data_date[:4]}年{data_date[4:6]}月{data_date[6:8]}日"
 
+    privacy_block = ""
+    if REDACT_AMOUNTS:
+        privacy_block = f"""
+## 隐私模式：金额已归一化
+
+本次数据已做金额脱敏：所有金额都以「占组合的百分比」给出，组合规模只以档位表示（当前档位：{size_tier(_TOTAL_ASSETS)}）。
+输出时必须遵守：
+
+- **不得出现任何货币金额**（`¥`、`元`、`万元`）或具体金额数字；
+- 表达调仓幅度时，用「占组合 X 个百分点」「减到 X%」这类比例表述；
+- 确需引用绝对金额时，只能写占位符 `[[AMT:12.5]]`（数字是占组合的百分比，如 12.5 表示 12.5%），由本机回填真实金额——**不要自己换算成钱**。
+"""
     md = f"""# 投资周报分析
 
 你是投资顾问团队。以下投资数据截止 {snapshot_date}（快照日期，非真实"本周"范围）。
 请始终以 {snapshot_date} 作为分析的时间基准，不要推定数据覆盖了后续日期。
+{privacy_block}
 
 ## 组合概览
 
@@ -1314,6 +1399,19 @@ def main():
 """
     out = BASE / "output/portfolio_review_prompt.md"
     archive_dir = BASE / "output/archive"
+    meta_file = BASE / "output/portfolio_review_meta.json"
+    meta_file.write_text(
+        json.dumps(
+            {
+                "redacted": REDACT_AMOUNTS,
+                "total_assets": _TOTAL_ASSETS,
+                "tier": size_tier(_TOTAL_ASSETS),
+                "snapshot_date": data_date,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     if "--print" in sys.argv:
         print(md)
     else:

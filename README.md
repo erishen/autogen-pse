@@ -131,6 +131,8 @@ Framework-level config (every task needs these):
 
 Each task may additionally require its own variables, declared in its `meta.json` → `env_required`. For example, `portfolio-review` requires `ASSET_LENS_DIR`, `MONEY_CSV_DIR`, `MARKET_INDICES` and the `PSE_*` detection thresholds (10 items). See `.env.example` for the fully annotated list.
 
+**`PSE_REDACT_AMOUNTS=1` (privacy mode)**: the model only receives percentages-of-portfolio plus a size tier, never absolute amounts. `run.py` reads the total from `output/portfolio_review_meta.json`, replaces any amount the model wrote with `[金额已按比例隐去]`, and appends a local conversion line (`1 percentage point ≈ ¥X`). Off by default.
+
 ## Tech Stack
 
 - **AutoGen** (`RoundRobinGroupChat`) — agent orchestration

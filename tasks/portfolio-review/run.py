@@ -180,6 +180,51 @@ def sanitize_review(text: str) -> str:
     return "\n".join(result)
 
 
+
+# ── 金额回填（隐私模式）──
+# prepare.py 在 PSE_REDACT_AMOUNTS=1 时只把金额换成占组合百分比，并写
+# output/portfolio_review_meta.json 记录本机真实总额；模型按约定输出
+# [[AMT:12.5]] 占位符，这里用总额把占位符还原成真实金额，全程不经过模型。
+def backfill_amounts(text: str) -> str:
+    meta_path = BASE / "output/portfolio_review_meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return text
+    if not meta.get("redacted"):
+        return text
+    total = float(meta.get("total_assets") or 0)
+    # 留一条本机诊断：回填是否真的生效，避免“以为脱敏了其实没有”。
+
+
+    def repl(m):
+        pct = float(m.group(1))
+        if total <= 0:
+            return "—"
+        amt = total * pct / 100
+        return f"¥{amt / 10000:.1f}万" if amt >= 10000 else f"¥{amt:.0f}"
+
+    # 先清掉模型自己猜的金额，再回填占位符：顺序反过来会把刚填好的真实金额又打码。
+    text = re.sub(r"¥\s*[\d,]+(?:\.\d+)?\s*万?", "[金额已按比例隐去]", text)
+    text = re.sub(r"[\d,]+(?:\.\d+)?\s*万元", "[金额已按比例隐去]", text)
+    text = re.sub(r"\[\[AMT:([\d.]+)\]\]", repl, text)
+    try:
+        (meta_path.parent / "last_backfill.log").write_text(
+            f"total={total} out_chars={len(text)} masks={text.count('[金额已按比例隐去]')}",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    if total > 0:
+        # 模型拿到的只有比例，报告里的钱由本机按总额换算；给一行固定换算基准，
+        # 这样任何“X 个百分点”都能被读者自己折回金额，且不依赖模型算数。
+        text = text.rstrip() + (
+            f"\n\n---\n\n> 🔒 金额脱敏：本报告在「只给比例」的输入下生成，"
+            f"模型不知道组合总额；正文中模型自拟的金额已隐去。\n"
+            f"> 本机换算基准（快照总额 ¥{total / 10000:.2f}万）：1 个百分点 ≈ ¥{total / 100:,.0f}。\n"
+        )
+    return text
+
 async def main():
     if not PROMPT_FILE.exists():
         print(f"❌ 未找到 {PROMPT_FILE}，请先运行 prepare.py（make summarize）")
@@ -229,6 +274,7 @@ async def main():
     review = extract_review_from_trace(task)
     if review:
         review = sanitize_review(review)
+        review = backfill_amounts(review)
         model_name = settings.OPENAI_MODEL.split("/")[-1]  # 取模型名最后一段作为目录名
         model_dir = BASE / f"output/{model_name}"
         model_dir.mkdir(parents=True, exist_ok=True)
