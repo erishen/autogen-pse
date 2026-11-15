@@ -31,7 +31,7 @@ summarize: ## 生成投资结构化摘要（零 LLM 成本）
 market: ## 查看最新市场指数行情
 	$(PY) tasks/portfolio-review/prepare_market.py
 
-review: review-deepseek ## 默认用 DeepSeek V4 Pro（等价于 make review-deepseek）
+review: review-deepseek ## 默认走 DeepSeek 付费路由（deepseek-v4-flash，经 tsm-hub），等价于 make review-deepseek
 
 # 自动检测：比对 portfolio_review_prompt.md 日期 vs asset-lens / money-csv 最新数据
 _auto-summarize:
@@ -68,7 +68,7 @@ flash-review: _auto-summarize ## 开发模式：DeepSeek Flash（更快）
 	$(PY) tasks/portfolio-review/run.py
 
 # ── 多模型快捷命令 ──
-review-deepseek: _auto-summarize ## 用 DeepSeek V4 Pro 跑周报（流式，稳定）
+review-deepseek: _auto-summarize ## 用 DeepSeek 付费路由 deepseek-v4-flash 跑周报（流式，稳定）
 	OPENAI_API_KEY=$(shell grep '^OPENAI_API_KEY=' .env | cut -d= -f2) \
 	OPENAI_BASE_URL=$(shell grep '^OPENAI_BASE_URL=' .env | cut -d= -f2) \
 	OPENAI_MODEL=$(shell grep '^OPENAI_MODEL=' .env | cut -d= -f2) \
