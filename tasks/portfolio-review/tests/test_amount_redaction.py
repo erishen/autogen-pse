@@ -83,3 +83,30 @@ def test_backfill_noop_when_not_redacted(tmp_path):
     )
     run.BASE = tmp_path
     assert run.backfill_amounts("[[AMT:12.5]] 原样") == "[[AMT:12.5]] 原样"
+
+
+def test_footer_reports_tier_not_total():
+    """页脚不得写出绝对总额：一份报告转贴出去就等于公开了资产规模。"""
+    run = _load("review_run_footer", "run.py", redacted=True)
+    footer = run._redacted_footer(2_997_513.26)
+    assert "¥" not in footer, footer
+    assert "299.75" not in footer, footer
+    assert "200万以上" in footer, footer
+    assert "1 个百分点" in footer, footer
+    # 档位边界与 prepare.py 的 size_tier 必须一致，否则两处口径会打架
+    prep = _load("prepare_tier_xcheck", "prepare.py", redacted=True)
+    for total in (0, 60_000, 100_000, 300_000, 2_000_000, 2_997_513.26):
+        assert run._size_tier(total) == prep.size_tier(total), total
+
+
+def test_backfill_footer_has_no_money(tmp_path):
+    run = _load("review_run_footer_bf", "run.py", redacted=True)
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "portfolio_review_meta.json").write_text(
+        json.dumps({"redacted": True, "total_assets": 2_997_513.26}), encoding="utf-8"
+    )
+    run.BASE = tmp_path
+    result = run.backfill_amounts("增长引擎 12.95%")
+    assert "¥" not in result, result
+    assert "200万以上" in result, result

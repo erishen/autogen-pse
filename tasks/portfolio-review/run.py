@@ -182,6 +182,29 @@ def sanitize_review(text: str) -> str:
 
 
 # ── 金额回填（隐私模式）──
+def _size_tier(total: float) -> str:
+    """组合规模只落到档位，与 prepare.py 的 size_tier 保持同一套边界。"""
+    if total <= 0:
+        return "未知"
+    for cap, label in (
+        (100_000, "10万以下"),
+        (500_000, "10-50万"),
+        (2_000_000, "50-200万"),
+    ):
+        if total < cap:
+            return label
+    return "200万以上"
+
+
+def _redacted_footer(total: float) -> str:
+    """脱敏页脚：只声明换算口径与档位，不写任何绝对金额。"""
+    return (
+        "\n\n---\n\n> 🔒 金额脱敏：本报告在「只给比例」的输入下生成，"
+        "模型不知道组合总额；正文中模型自拟的金额已隐去。\n"
+        f"> 换算口径：1 个百分点 = 组合总额的 1%（组合规模档位：{_size_tier(total)}，不披露具体额度）。\n"
+    )
+
+
 # prepare.py 在 PSE_REDACT_AMOUNTS=1 时只把金额换成占组合百分比，并写
 # output/portfolio_review_meta.json 记录本机真实总额；模型按约定输出
 # [[AMT:12.5]] 占位符，这里用总额把占位符还原成真实金额，全程不经过模型。
@@ -216,13 +239,9 @@ def backfill_amounts(text: str) -> str:
     except OSError:
         pass
     if total > 0:
-        # 模型拿到的只有比例，报告里的钱由本机按总额换算；给一行固定换算基准，
-        # 这样任何“X 个百分点”都能被读者自己折回金额，且不依赖模型算数。
-        text = text.rstrip() + (
-            f"\n\n---\n\n> 🔒 金额脱敏：本报告在「只给比例」的输入下生成，"
-            f"模型不知道组合总额；正文中模型自拟的金额已隐去。\n"
-            f"> 本机换算基准（快照总额 ¥{total / 10000:.2f}万）：1 个百分点 ≈ ¥{total / 100:,.0f}。\n"
-        )
+        # 换算口径只给比例与档位：报告可能被转贴出去，页脚不得出现具体总额，
+        # 否则「正文脱敏、页脚泄底」，一份文件就足以反推组合规模。
+        text = text.rstrip() + _redacted_footer(total)
     return text
 
 async def main():
