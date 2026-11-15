@@ -196,6 +196,37 @@ def _size_tier(total: float) -> str:
     return "200万以上"
 
 
+def _risk_label_mismatches(text: str, authoritative_pct: float) -> list[str]:
+    """找「中高风险…X%」里与快照权威值不符的表述（允许 0.5 个百分点容差）。"""
+    bad = []
+    for m in re.finditer(r"中高风险[^。\n]{0,20}?([0-9]+(?:\.[0-9]+)?)\s*%", text):
+        if abs(float(m.group(1)) - authoritative_pct) > 0.5:
+            bad.append(m.group(0).strip())
+    return bad
+
+
+def annotate_risk_label(text: str) -> str:
+    """口径校验：模型个别轮次会把「增长引擎占 X%」写成「中高风险占 X%」。
+
+    权威值由 prepare 写进 meta（risk_mid_high_pct），这里只做比对与标注，
+    不改模型原文，避免掩盖问题。
+    """
+    try:
+        meta = json.loads((BASE / "output/portfolio_review_meta.json").read_text(encoding="utf-8"))
+        authoritative = float(meta.get("risk_mid_high_pct"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return text
+    bad = _risk_label_mismatches(text, authoritative)
+    if not bad:
+        return text
+    hits = "、".join(f"「{b.replace('*', '').strip()}」" for b in bad)
+    return text.rstrip() + (
+        f"\n\n> ⚠️ 口径校验未通过：报告中有 {len(bad)} 处把不属于风险层级的占比写成了「中高风险」"
+        f"（{hits}）。快照 risk_distribution 的中高 + 高合计为 {authoritative:.2f}%，请以此为准；"
+        "上述被误用的数值通常来自「增长引擎」占比，两者含义不同，也不可互相替代。\n"
+    )
+
+
 def _redacted_footer(total: float) -> str:
     """脱敏页脚：只声明换算口径与档位，不写任何绝对金额。"""
     return (
@@ -293,6 +324,7 @@ async def main():
     review = extract_review_from_trace(task)
     if review:
         review = sanitize_review(review)
+        review = annotate_risk_label(review)
         review = backfill_amounts(review)
         model_name = settings.OPENAI_MODEL.split("/")[-1]  # 取模型名最后一段作为目录名
         model_dir = BASE / f"output/{model_name}"

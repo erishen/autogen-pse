@@ -50,6 +50,24 @@ def size_tier(total: float) -> str:
     return "未知"
 
 
+def mid_high_risk_pct(data: dict) -> float:
+    """中高风险（中高 + 高）合计占比，作为报告里该口径的唯一权威值。
+
+    报告曾把「增长引擎 12.95%」写成「中高风险资产占 12.95%」，与快照的
+    中高 5.88% + 高 3.18% = 9.06% 自相矛盾；这里把权威值算出来写进提示词与 meta，
+    由 run.py 事后比对。
+    """
+    rd = data.get("risk_distribution", {})
+    total = 0.0
+    for level in ("中高", "高"):
+        raw = str(rd.get(level, {}).get("percentage", "0")).strip().rstrip("%")
+        try:
+            total += float(raw)
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
 def pct_of_total(value, total: float = None) -> str:
     t = total if total is not None else _TOTAL_ASSETS
     if not t:
@@ -258,7 +276,11 @@ def build_overview(data: dict) -> str:
             f"- 未实现收益: +{float(g('unrealized_profit')) / 10000:.2f}万元",
         ]
     rows += [
-        f"- 整体收益率: {g('overall_return_rate')}",
+        f"- 整体收益率: {g('overall_return_rate')}（含已实现收益口径，本报告采用）",
+        f"- 当前持仓浮盈口径: {data.get('portfolio_summary', {}).get('overall_return_rate', '?')}"
+        "（仅未实现，见快照 portfolio_summary；与上一行口径不同，不可互相替代、不可相加）",
+        f"- 中高风险合计: {mid_high_risk_pct(data):.2f}%（快照 risk_distribution 的中高 + 高）"
+        "——报告里凡提「中高风险」必须用此数，**不得与「增长引擎」占比混用**",
         f"- 加权年化收益率: {g('weighted_annual_return')}",
         f"- 时间加权年化: {g('time_weighted_return')}",
     ]
@@ -1406,6 +1428,7 @@ def main():
                 "redacted": REDACT_AMOUNTS,
                 "total_assets": _TOTAL_ASSETS,
                 "tier": size_tier(_TOTAL_ASSETS),
+                "risk_mid_high_pct": mid_high_risk_pct(data),
                 "snapshot_date": data_date,
             },
             ensure_ascii=False,
