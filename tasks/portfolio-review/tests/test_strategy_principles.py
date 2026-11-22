@@ -5,6 +5,10 @@
 2. 把增长引擎占比缺口（长期结构锚）当成「本周该补」的行动指令，
    而忽略低效固收才是年化拖累的首因。
 修复后这些纪律由 prepare.py 注入 prompt，本测试确保它们不被后续改动回退。
+
+可克隆性：prepare.py 模块顶层读 .env、缺键即 sys.exit；market-notes.md 是 gitignored
+的本地私有注记。两者都不进公开仓，故本测试自带最小 env 占位并容忍注记缺席——
+干净 clone 上 5 例须全绿（用 `git archive HEAD` 抽树实测，别只跑本地）。
 """
 
 import importlib.util
@@ -14,8 +18,34 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TASK_DIR = HERE.parent
 
+# 补齐 prepare.py 模块顶层 sys.exit 必需的全部 env 键；占位值中性、不指向任何真实路径。
+# load_dotenv 默认 override=False：本机有真值时照旧沿用（能读到真实 market_env.json），
+# 干净 clone 缺值时才用占位，被测函数返回空串，各断言已容忍。
+_BOOTSTRAP_ENV = {
+    "ASSET_LENS_DIR": ".data/asset-lens-placeholder",
+    "MONEY_CSV_DIR": ".data/money-csv-placeholder",
+    "MARKET_INDICES": "上证指数,沪深300",
+    # prepare.py 顶层还会读 12 个检测阈值（_env_int/_env_float，无默认值、缺则
+    # sys.exit）。用中性 1 / 占位类型名即可让模块 import 成功；被测的两个函数是
+    # 纯文本生成，不依赖这些阈值的具体数值。
+    "PSE_LONG_LOSS_DAYS": "1",
+    "PSE_LOW_EFF_DAYS": "1",
+    "PSE_LOW_EFF_MAX_RETURN": "1",
+    "PSE_LOW_EFF_MIN_AMOUNT": "1",
+    "PSE_HIGH_VOL_MIN_RETURN": "1",
+    "PSE_HIGH_VOL_MAX_DAYS": "1",
+    "PSE_HIGH_VOL_MIN_AMOUNT": "1",
+    "PSE_LARGE_POS_TYPES": "占位类型",
+    "PSE_LARGE_POS_MIN_AMOUNT": "1",
+    "PSE_LARGE_POS_MAX_RETURN": "1",
+    "PSE_CUR_LOSS_THRESHOLD": "1",
+    "PSE_CUR_LOSS_MIN_AMOUNT": "1",
+}
+
 
 def _load_prepare():
+    for key, value in _BOOTSTRAP_ENV.items():
+        os.environ.setdefault(key, value)
     os.environ["PSE_REDACT_AMOUNTS"] = "1"
     spec = importlib.util.spec_from_file_location("prepare_strategy", TASK_DIR / "prepare.py")
     module = importlib.util.module_from_spec(spec)
@@ -60,8 +90,16 @@ def test_fed_section_separates_effr_from_target_rate():
 
 
 def test_market_notes_use_correct_fed_wording():
-    """注记不得再出现「目标利率 3.88%」「升至 3.88%」这类错误表述。"""
-    notes = (TASK_DIR / "market-notes.md").read_text(encoding="utf-8")
+    """注记不得再出现「目标利率 3.88%」「升至 3.88%」这类错误表述。
+
+    market-notes.md 是 gitignored 的本地私有注记，公开 clone 里没有属合法状态，
+    此时跳过；代码级口径纪律由 test_fed_section_separates_effr_from_target_rate
+    钉死，不依赖私有文件。
+    """
+    notes_path = TASK_DIR / "market-notes.md"
+    if not notes_path.exists():
+        return  # 干净 clone：私有注记缺席，跳过
+    notes = notes_path.read_text(encoding="utf-8")
     assert "3.75%–4.00%" in notes
     assert "目标利率" in notes and "区间" in notes
     assert "EFFR" in notes
